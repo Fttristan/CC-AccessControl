@@ -882,13 +882,25 @@ local function handleMessage(sender,msg,proto)
     return
   end
 
+  if msg.type=="status" then
+    local tag = trim(msg.tag or "")
+    rednet.send(sender, {
+      type = "status_result",
+      tag = tag,
+      lockdown = lockdown,
+      door = db.doors[tag],
+      server = HOST_NAME,
+    }, PROTOCOL)
+    return
+  end
+
   -------------- verify (keypads + fob) -----
   if msg.type=="verify" then
     local tag=trim(msg.tag)
     local code=trim(msg.pin or msg.code)
 
     local ok,userName,reason = verifyAccess(tag,code)
-    rednet.send(sender,{type="verify_result",ok=ok,tag=tag},PROTOCOL)
+    rednet.send(sender,{type="verify_result",ok=ok,tag=tag,reason=reason,lockdown=lockdown},PROTOCOL)
 
     logEvent({
       event="pin_attempt",
@@ -910,6 +922,7 @@ local function handleMessage(sender,msg,proto)
   -------------- controller registration ----
   if msg.type=="registerController" then
     local tag=trim(msg.tag)
+    ensureDoor(tag)
     controllersByTag[tag]=controllersByTag[tag] or {}
     controllersByTag[tag][sender]=true
     rednet.send(sender,{type="register_ack",tag=tag},PROTOCOL)

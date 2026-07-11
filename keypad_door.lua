@@ -179,10 +179,21 @@ local REQUEST_TIMEOUT = tonumber(config.request_timeout) or 3
 local MAX_CODE_LENGTH = tonumber(config.max_code_length) or 12
 local ENTRY_LABEL = config.entry_label or "Code"
 
+local status = {
+  server = "unknown",
+  reader = "none",
+  mode = "idle",
+  lastResult = "waiting",
+  lockdown = false,
+  lastChecked = 0,
+}
+
 -- ---------- Modem ----------
 local function openModems()
   for _, side in ipairs(rs.getSides()) do
-    if peripheral.getType(side) == "modem" then rednet.open(side) end
+    if peripheral.getType(side) == "modem" then
+      rednet.open(side)
+    end
   end
 end
 
@@ -190,10 +201,74 @@ local function findServer()
   return rednet.lookup(PROTOCOL, SERVER_NAME)
 end
 
+
+local function setStatus(fields)
+  for key, value in pairs(fields or {}) do
+    status[key] = value
+  end
+  status.lastChecked = os.epoch("utc")
+end
+
+local function statusText()
+  return string.format("Server:%s | Reader:%s | Mode:%s | Result:%s | Lockdown:%s",
+    status.server or "unknown",
+    status.reader or "none",
+    status.mode or "idle",
+    status.lastResult or "waiting",
+    status.lockdown and "ON" or "OFF")
+end
+
+local function requestServerStatus(serverID)
+  if not serverID then
+    setStatus({ server = "offline", lockdown = false })
+    return nil
+  end
+
+  rednet.send(serverID, { type = "status", tag = DOOR_TAG }, PROTOCOL)
+  local timer = os.startTimer(REQUEST_TIMEOUT)
+  while true do
+    local event = { os.pullEvent() }
+    if event[1] == "rednet_message" then
+      local id, msg, proto = event[2], event[3], event[4]
+      if id == serverID and proto == PROTOCOL and type(msg) == "table" and msg.type == "status_result" and msg.tag == DOOR_TAG then
+        setStatus({
+          server = tostring(id),
+          lockdown = msg.lockdown == true,
+          lastResult = msg.lockdown and "lockdown active" or "ready",
+        })
+        return msg
+      end
+    elseif event[1] == "timer" and event[2] == timer then
+      setStatus({ lastResult = "status timeout" })
+      return nil
+    end
+  end
+end
+
+local function waitForServer(timeoutSeconds)
+  timeoutSeconds = timeoutSeconds or REQUEST_TIMEOUT
+  local start = os.epoch("utc")
+  local server = findServer()
+  while not server and ((os.epoch("utc") - start) / 1000) < timeoutSeconds do
+    sleep(0.5)
+    server = findServer()
+  end
+
+  if server then
+    setStatus({ server = tostring(server), mode = status.mode or "idle" })
+    return server
+  end
+
+  setStatus({ server = "offline" })
+  return nil
+end
 -- ---------- Terminal UI ----------
 local function terminalPIN()
   term.clear()
   term.setCursorPos(1,1)
+  print("[DoorAuth Keypad]")
+  print(statusText())
+  print("")
   write("Enter " .. ENTRY_LABEL .. ": ")
   local pin = read("*") -- masked
   return pin
@@ -254,6 +329,12 @@ local function drawKeypad(mon, layout)
     end
   end
 
+  local statusY = layout.compact and 7 or 14
+  mon.setCursorPos(2, statusY)
+  mon.write(status.server ~= "offline" and "Online" or "Offline")
+  mon.setCursorPos(2, statusY + 1)
+  mon.write((status.mode or "idle") .. " | " .. (status.lastResult or "waiting"))
+
   return { keys=keys, startX=startX, startY=startY, bw=bw, bh=bh, gap=gap, pinY=pinY }
 end
 
@@ -272,6 +353,15 @@ local function keypadLoop(mon)
     mon.setCursorPos(x, geo.pinY)
     mon.write(string.rep("*", #pin))
   end
+
+  local function refreshStatus(message)
+    if message then
+      setStatus(message)
+    end
+    drawKeypad(mon, layout)
+    refreshPIN()
+  end
+
   refreshPIN()
 
   while true do
@@ -320,10 +410,10 @@ local function verifyWithServer(serverID, tag, pin)
       local id, msg, proto = ev[2], ev[3], ev[4]
       if id==serverID and proto==PROTOCOL and type(msg)=="table"
          and msg.type=="verify_result" and msg.tag==tag then
-        return msg.ok
+        return msg.ok, msg.reason, msg.lockdown
       end
     elseif ev[1] == "timer" and ev[2] == timer then
-      return false,"timeout"
+      return false, "timeout", nil
     end
   end
 end
@@ -367,20 +457,27 @@ local function readCardCode(readerName, reader)
 end
 
 local function chooseAccessMode(hasCardReader)
-  if not hasCardReader then
-    return "pin"
-  end
-
   term.clear()
   term.setCursorPos(1,1)
-  print("=== Access Mode ===")
-  print("1) PIN")
-  print("2) Magnetic Card")
+  print("[DoorAuth Keypad]")
+  print(statusText())
+  print("")
+  print("1) PIN entry")
+  print(hasCardReader and "2) Magnetic card" or "2) Magnetic card (unavailable)")
+  print("3) Status screen")
+  print("4) Refresh server")
+  print("Q) Quit")
   write("Choose: ")
-  local choice = string.lower(read() or "")
+  local choice = string.lower(trim(read() or ""))
 
-  if choice == "2" or choice == "c" or choice == "card" then
+  if choice == "2" and hasCardReader then
     return "card"
+  elseif choice == "3" then
+    return "status"
+  elseif choice == "4" then
+    return "refresh"
+  elseif choice == "q" then
+    return "quit"
   end
 
   return "pin"
@@ -391,12 +488,26 @@ local function main()
   openModems()
   local mon = peripheral.find("monitor")
   local readerName, reader = findCardManipulator()
+  setStatus({ reader = readerName or "none" })
 
-  local server = findServer()
-  if not server then
-    print("Finding server...")
-    while not server do sleep(2); server = findServer() end
+  local server = waitForServer(REQUEST_TIMEOUT)
+  while not server do
+    term.clear()
+    term.setCursorPos(1,1)
+    print("[DoorAuth Keypad]")
+    print(statusText())
+    print("")
+    print("Server not found.")
+    print("Press Enter to retry or Q to quit.")
+    local choice = string.lower(trim(read() or ""))
+    if choice == "q" then
+      return
+    end
+    server = waitForServer(REQUEST_TIMEOUT)
   end
+
+  requestServerStatus(server)
+
   if readerName then
     print("[Keypad/Card] Server #" .. server .. " | Manipulator '" .. readerName .. "' | Door '" .. DOOR_TAG .. "'")
   else
@@ -404,13 +515,48 @@ local function main()
   end
 
   while true do
-    local pin
     local accessMode = chooseAccessMode(readerName ~= nil)
+    if accessMode == "quit" then
+      setStatus({ mode = "quit", lastResult = "session ended" })
+      return
+    elseif accessMode == "refresh" then
+      setStatus({ mode = "refresh", lastResult = "checking server" })
+      server = waitForServer(REQUEST_TIMEOUT)
+      if server then
+        requestServerStatus(server)
+        setStatus({ server = tostring(server), lastResult = "server online" })
+      end
+      if mon then
+        drawKeypad(mon, decideLayout(mon.getSize()))
+      end
+      goto continue
+    elseif accessMode == "status" then
+      requestServerStatus(server)
+      term.clear()
+      term.setCursorPos(1,1)
+      print("[DoorAuth Keypad Status]")
+      print(statusText())
+      print("Door: " .. DOOR_TAG)
+      print("Server ID: " .. tostring(server))
+      print("Reader: " .. tostring(readerName or "none"))
+      print("")
+      print("1) Back")
+      print("2) Refresh now")
+      local choice = trim(read() or "")
+      if choice == "2" then
+        server = waitForServer(REQUEST_TIMEOUT)
+      end
+      goto continue
+    end
+
+    local pin
+    setStatus({ mode = accessMode })
 
     if accessMode == "card" and readerName then
       term.clear()
       term.setCursorPos(1,1)
       print("Insert magnetic card for door: " .. DOOR_TAG)
+      setStatus({ lastResult = "waiting for card" })
       pin = readCardCode(readerName, reader)
     elseif mon then
       pin = keypadLoop(mon)
@@ -423,6 +569,7 @@ local function main()
     if pin == "" then
       if accessMode == "card" and readerName then
         print("No code read.")
+        setStatus({ lastResult = "no card read" })
         sleep(1)
       elseif mon then
         drawKeypad(mon, decideLayout(mon.getSize()))
@@ -430,17 +577,27 @@ local function main()
         print("No code entered.")
       end
     else
-      local ok = verifyWithServer(server, DOOR_TAG, pin)
+      local ok, reason, locked = verifyWithServer(server, DOOR_TAG, pin)
+      setStatus({
+        lastResult = locked and "lockdown active" or (ok and "access granted" or (reason == "timeout" and "server timeout" or "access denied")),
+        lockdown = locked == true,
+      })
       if mon then
-        local msg = ok and "GRANTED" or "DENIED"
+        local msg = locked and "LOCKDOWN" or (ok and "GRANTED" or "DENIED")
         mon.setCursorPos(2, (decideLayout(mon.getSize())).compact and 1 or 1)
         mon.write("Access: "..msg.."        ")
         sleep(ok and 0.8 or 1.2)
         drawKeypad(mon, decideLayout(mon.getSize()))
       else
-        print(ok and "Access GRANTED" or "Access DENIED")
+        if locked then
+          print("BLOCKED BY LOCKDOWN")
+        else
+          print(ok and "Access GRANTED" or "Access DENIED")
+        end
       end
     end
+
+    ::continue::
   end
 end
 
