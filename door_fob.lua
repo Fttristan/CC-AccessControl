@@ -187,6 +187,29 @@ local function findServer()
   return rednet.lookup(PROTOCOL, SERVER_NAME)
 end
 
+local function drawHeader(title, subtitle)
+  term.clear()
+  term.setCursorPos(1, 1)
+  print(title)
+  if subtitle and subtitle ~= "" then
+    print(subtitle)
+  end
+  print(string.rep("-", 36))
+end
+
+local function pause(message)
+  if message and message ~= "" then
+    print(message)
+  end
+  print("Press Enter to continue.")
+  read()
+end
+
+local function trim(s)
+  s = tostring(s or "")
+  return s:gsub("^%s+", ""):gsub("%s+$", "")
+end
+
 local function getDoorList()
   local server = findServer()
   if not server then return nil, "Server offline." end
@@ -201,11 +224,13 @@ local function getDoorList()
 end
 
 local function askPin()
-  term.clear()
-  term.setCursorPos(1,1)
-  print("Enter Code:")
-  write("> ")
+  drawHeader("[DoorAuth Fob] Enter Code", "Leave blank to go back")
+  write("Code: ")
   local pin = read("*")
+  pin = trim(pin)
+  if pin == "" then
+    return nil
+  end
   return pin
 end
 
@@ -226,66 +251,108 @@ local function sendVerify(tag, pin)
   return msg.ok, nil
 end
 
+local lastDoor = nil
+
 ---------------------------------------------------
 -- DOOR SELECTION MENU
 ---------------------------------------------------
 local function pickDoor()
   local list, err = getDoorList()
   if not list then
-    term.clear()
-    term.setCursorPos(1,1)
-    print("Error loading doors:")
+    drawHeader("[DoorAuth Fob] Door List", "Could not load doors")
     print(err)
-    sleep(1.5)
+    pause()
     return nil
   end
 
   if #list == 0 then
-    term.clear()
-    term.setCursorPos(1,1)
-    print("No doors registered.")
-    sleep(1.5)
+    drawHeader("[DoorAuth Fob] Door List", "No doors registered")
+    pause()
     return nil
   end
 
   local sel = 1
   local maxVisible = 6
+  local filter = ""
+
+  local function filteredDoors()
+    if filter == "" then
+      return list
+    end
+
+    local out = {}
+    local needle = filter:lower()
+    for _, door in ipairs(list) do
+      if door:lower():find(needle, 1, true) then
+        table.insert(out, door)
+      end
+    end
+    return out
+  end
 
   local function draw()
-    term.clear()
-    term.setCursorPos(1,1)
-    print("=== Select Door ===")
-    print("W/S to move, Enter to choose")
+    local doors = filteredDoors()
+    drawHeader("[DoorAuth Fob] Select Door", filter ~= "" and ("Filter: " .. filter) or "W/S move, Enter choose, / filter, R reset, Q back")
 
-    local start = math.max(1, sel - math.floor(maxVisible/2))
-    local finish = math.min(#list, start + maxVisible - 1)
+    if #doors == 0 then
+      print("No matching doors.")
+      return doors
+    end
+
+    if sel > #doors then
+      sel = #doors
+    end
+    if sel < 1 then
+      sel = 1
+    end
+
+    local start = math.max(1, sel - math.floor(maxVisible / 2))
+    local finish = math.min(#doors, start + maxVisible - 1)
 
     for i=start, finish do
       term.setCursorPos(2, i - start + 4)
       if i == sel then
         if term.isColor() then term.setTextColor(colors.cyan) end
-        print(" > "..list[i])
+        print(" > "..doors[i])
         term.setTextColor(colors.white)
       else
-        print("   "..list[i])
+        print("   "..doors[i])
       end
     end
+
+    print("")
+    print("Total: " .. tostring(#doors) .. " door(s)")
+
+    return doors
   end
 
   while true do
-    draw()
-    term.setCursorPos(1, maxVisible + 6)
-    write("Command: ")
-    local c = read()
-
-    c = string.lower(c)
+    local doors = draw()
+    if #doors == 0 then
+      write("Filter or Q: ")
+    else
+      write("Command: ")
+    end
+    local c = string.lower(trim(read()))
 
     if c == "w" then
       if sel > 1 then sel = sel - 1 end
     elseif c == "s" then
-      if sel < #list then sel = sel + 1 end
+      if sel < #doors then sel = sel + 1 end
+    elseif c == "/" then
+      write("Filter text: ")
+      filter = trim(read())
+      sel = 1
+    elseif c == "r" then
+      filter = ""
+      sel = 1
+    elseif c == "q" then
+      return nil
     elseif c == "" or c == "enter" then
-      return list[sel]
+      return doors[sel]
+    elseif filter == "" and #c > 0 then
+      filter = c
+      sel = 1
     end
   end
 end
@@ -296,38 +363,51 @@ end
 openModems()
 
 while true do
-  local door = pickDoor()
-  if not door then
-    term.clear()
-    term.setCursorPos(1,1)
-    print("No door selected.")
-    sleep(1)
-    goto continue
+  drawHeader("[DoorAuth Fob] Main Menu", "1) Select door  2) Refresh list  3) Quit")
+  if lastDoor then
+    print("Last door: " .. tostring(lastDoor))
   end
+  write("Choose: ")
+  local choice = string.lower(trim(read()))
 
-  local pin = askPin()
-  term.clear()
-  term.setCursorPos(1,1)
-  print("Sending…")
-
-  local ok, err = sendVerify(door, pin)
-
-  term.clear()
-  term.setCursorPos(1,1)
-  print("=== Access Result ===")
-  print("Door: "..door)
-  print("")
-
-  if err then
-    print("Error: "..err)
-  elseif ok then
-    print("ACCESS GRANTED")
-    print("Door opening…")
+  if choice == "3" or choice == "q" then
+    drawHeader("[DoorAuth Fob] Goodbye", "Session ended")
+    return
+  elseif choice == "2" then
+    pause("Refreshing door list...")
   else
-    print("ACCESS DENIED")
-  end
+    local door = nil
+    if choice == "1" or choice == "" then
+      door = pickDoor()
+    elseif lastDoor and (choice == "l" or choice == "last") then
+      door = lastDoor
+    end
 
-  print("\nPress Enter…")
-  read()
-  ::continue::
+    if not door then
+      pause("No door selected.")
+    else
+      local pin = askPin()
+      if not pin then
+        pause("Canceled.")
+      else
+        drawHeader("[DoorAuth Fob] Sending", "Door: " .. door)
+        print("Verifying code...")
+
+        local ok, err = sendVerify(door, pin)
+        lastDoor = door
+
+        drawHeader("[DoorAuth Fob] Access Result", "Door: " .. door)
+        if err then
+          print("Error: " .. err)
+        elseif ok then
+          print("ACCESS GRANTED")
+          print("Door opening...")
+        else
+          print("ACCESS DENIED")
+        end
+
+        pause()
+      end
+    end
+  end
 end

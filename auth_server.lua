@@ -414,6 +414,69 @@ local function addUser(name, code)
   return true
 end
 
+local function clearUserCode(name)
+  local key = trim(name)
+  local user = db.users[key]
+  if not user then return false end
+  user.codeHash = nil
+  return true
+end
+
+local function clearUserDoors(name)
+  local key = trim(name)
+  local user = db.users[key]
+  if not user then return false end
+  user.doors = {}
+  return true
+end
+
+local function cloneUserAccess(sourceName, targetName, includeCode)
+  local sourceKey = trim(sourceName)
+  local targetKey = trim(targetName)
+  if sourceKey == "" or targetKey == "" then return false end
+
+  local source = db.users[sourceKey]
+  local target = ensureUser(targetKey)
+  if not source or not target then return false end
+
+  target.doors = {}
+  for tag, enabled in pairs(source.doors or {}) do
+    if enabled then
+      target.doors[tag] = true
+    end
+  end
+
+  if includeCode then
+    target.codeHash = source.codeHash
+  end
+
+  return true
+end
+
+local listUsers
+
+local function searchUsers(query)
+  query = trim(query):lower()
+  local users = listUsers()
+  if query == "" then
+    return users
+  end
+
+  local out = {}
+  for _, user in ipairs(users) do
+    local haystack = table.concat({
+      user.name or "",
+      table.concat(user.doors or {}, " "),
+      user.hasCode and "code" or "",
+      user.hasCard and "card" or "",
+    }, " "):lower()
+    if haystack:find(query, 1, true) then
+      table.insert(out, user)
+    end
+  end
+  return out
+end
+
 local function generateCardToken(name)
   return ("card_%s_%s_%s"):format(trim(name), tostring(os.epoch("utc")), tostring(math.random(100000, 999999)))
 end
@@ -493,7 +556,7 @@ local function listUserDoors(name)
   return doors
 end
 
-local function listUsers()
+listUsers = function()
   local out = {}
   for name,user in pairs(db.users) do
     local doors = listUserDoors(name) or {}
@@ -558,6 +621,12 @@ local function verifyAccess(tag, code)
   end
 
   return hasPin(tag, code), nil, nil
+end
+
+local function setColor(col)
+  if term.isColor and term.isColor() then
+    term.setTextColor(col)
+  end
 end
 
 local function isPocketComputer()
@@ -743,6 +812,24 @@ local function handleRemoteAdmin(sender,msg)
       logEvent({event="user_add", tag=msg.name, ok=ok, source="remote"})
       rednet.send(sender,{type="admin_result", ok=ok},PROTOCOL)
 
+    elseif msg.cmd=="user_clear_code" then
+      local ok = clearUserCode(msg.name)
+      logEvent({event="user_clear_code", tag=msg.name, ok=ok, source="remote"})
+      rednet.send(sender,{type="admin_result", ok=ok},PROTOCOL)
+
+    elseif msg.cmd=="user_clear_doors" then
+      local ok = clearUserDoors(msg.name)
+      logEvent({event="user_clear_doors", tag=msg.name, ok=ok, source="remote"})
+      rednet.send(sender,{type="admin_result", ok=ok},PROTOCOL)
+
+    elseif msg.cmd=="user_clone" then
+      local ok = cloneUserAccess(msg.source, msg.name, msg.includeCode)
+      logEvent({event="user_clone", tag=msg.name, ok=ok, source="remote", detail=tostring(msg.source)})
+      rednet.send(sender,{type="admin_result", ok=ok},PROTOCOL)
+
+    elseif msg.cmd=="user_search" then
+      rednet.send(sender,{type="admin_users", users=searchUsers(msg.query)},PROTOCOL)
+
     elseif msg.cmd=="user_card_issue" then
       local token = issueUserCard(msg.name)
       local ok = token ~= nil
@@ -841,240 +928,582 @@ end
 --------------------------------------------
 
 ---------------- Console -------------------
-local function help()
-  print([[Commands:
-  help
-  controllers
-  save
-  reboot
-  cls
-
-  -- Admin commands --
-  add <tag> <pin>
-  del <tag> <pin>
-  user_add <name> <code>
-  user_del <name>
-  user_card_issue <name>
-  user_card_clear <name>
-  user_card_show <name>
-  user_enable <name> <tag>
-  user_disable <name> <tag>
-  user_doors <name>
-  user_list
-  user_show <name>
-  opentime <tag> <seconds>
-  remove <tag>
-  show <tag>
-  list
-  lockdown_on
-  lockdown_off
-  logs
-]])
+local function pause(message)
+  if message and message ~= "" then
+    print(message)
+  end
+  print("Press Enter to continue.")
+  read()
 end
 
-local function printLogsConsole(maxLines)
-  if not requireAdmin() then return end
-  maxLines=maxLines or 40
-  local n=#logs
-  local start = math.max(1, n-maxLines+1)
-  for i=start,n do
-    local e=logs[i]
-    local status = e.ok==nil and "" or (e.ok and "OK" or "FAIL")
-    print(("[%4d] %s %-14s tag=%s %s %s")
-      :format(
-        i,
-        e.time or "??:??",
-        e.event or "?",
-        e.tag or "-",
-        status,
-        e.detail or ""
-      ))
+local function drawHeader(title, subtitle)
+  term.clear()
+  term.setCursorPos(1, 1)
+  setColor(colors.cyan)
+  print(title)
+  setColor(colors.white)
+  if subtitle and subtitle ~= "" then
+    print(subtitle)
+  end
+  print(string.rep("-", 36))
+end
+
+local function printDoorSummary(tag, door)
+  local userCount = 0
+  for _, user in pairs(db.users) do
+    if user and user.doors and user.doors[tag] then
+      userCount = userCount + 1
+    end
+  end
+
+  print(('%s | pins:%d | open:%ss | users:%d')
+    :format(tag, #(door.pins or {}), tonumber(door.openTime) or 3, userCount))
+end
+
+local function printUserSummary(user)
+  print(('%s | doors:%d | code:%s | card:%s')
+    :format(user.name, user.doorCount or 0, user.hasCode and "yes" or "no", user.hasCard and "yes" or "no"))
+end
+
+local function showControllers()
+  drawHeader("[DoorAuth Server] Controllers", "Registered controllers by door tag")
+  local count = 0
+  for tag, set in pairs(controllersByTag) do
+    local ids = {}
+    for id, _ in pairs(set) do
+      table.insert(ids, tostring(id))
+    end
+    table.sort(ids)
+    print(tag .. " -> " .. table.concat(ids, ", "))
+    count = count + 1
+  end
+  if count == 0 then
+    print("No controllers are registered.")
+  end
+  pause()
+end
+
+local function showDoorList()
+  drawHeader("[DoorAuth Server] Doors", "Available doors and current access totals")
+  local tags = {}
+  for tag in pairs(db.doors) do
+    table.insert(tags, tag)
+  end
+  table.sort(tags)
+
+  if #tags == 0 then
+    print("No doors configured yet.")
+    pause()
+    return
+  end
+
+  for _, tag in ipairs(tags) do
+    printDoorSummary(tag, db.doors[tag])
+  end
+  pause()
+end
+
+local function showDoorDetail()
+  drawHeader("[DoorAuth Server] Door Detail", "Inspect one door at a time")
+  write("Door tag: ")
+  local tag = trim(read())
+  local door = db.doors[tag]
+  drawHeader("[DoorAuth Server] Door Detail", tag ~= "" and tag or "No tag entered")
+
+  if not door then
+    print("No such door.")
+    pause()
+    return
+  end
+
+  print("Open time: " .. tostring(door.openTime or 3) .. " seconds")
+  print("Pins:")
+  if type(door.pins) ~= "table" or #door.pins == 0 then
+    print("  (none)")
+  else
+    for _, pin in ipairs(door.pins) do
+      print("  " .. tostring(pin))
+    end
+  end
+
+  print("Users:")
+  local found = false
+  for name, user in pairs(db.users) do
+    if user and user.doors and user.doors[tag] then
+      found = true
+      print("  " .. name .. (user.cardToken and " [card]" or ""))
+    end
+  end
+  if not found then
+    print("  (none)")
+  end
+
+  pause()
+end
+
+local function editDoorPin(action)
+  drawHeader("[DoorAuth Server] Door PINs", action == "add" and "Add a PIN to a door" or "Remove a PIN from a door")
+  write("Door tag: ")
+  local tag = trim(read())
+  write(action == "add" and "New PIN: " or "PIN to remove: ")
+  local pin = trim(read())
+  if tag == "" or pin == "" then
+    pause("Missing door tag or PIN.")
+    return
+  end
+
+  local ok = action == "add" and addPin(tag, pin) or removePin(tag, pin)
+  logEvent({event = action == "add" and "pin_add" or "pin_del", tag = tag, ok = ok, source = "console"})
+  pause(ok and "Saved." or "No change.")
+end
+
+local function setDoorOpenTime()
+  drawHeader("[DoorAuth Server] Open Time", "Set how long the door stays open")
+  write("Door tag: ")
+  local tag = trim(read())
+  write("Seconds: ")
+  local seconds = tonumber(read())
+  if tag == "" or not seconds then
+    pause("Missing door tag or invalid seconds.")
+    return
+  end
+
+  ensureDoor(tag)
+  db.doors[tag].openTime = seconds
+  logEvent({event = "opentime_set", tag = tag, ok = true, source = "console", detail = tostring(seconds)})
+  pause("Updated.")
+end
+
+local function removeDoor()
+  drawHeader("[DoorAuth Server] Remove Door", "Delete a door and all of its PINs")
+  write("Door tag: ")
+  local tag = trim(read())
+  if tag == "" then
+    pause("Missing door tag.")
+    return
+  end
+
+  local existed = db.doors[tag] ~= nil
+  db.doors[tag] = nil
+  logEvent({event = "door_remove", tag = tag, ok = existed, source = "console"})
+  pause(existed and "Door removed." or "No such door.")
+end
+
+local function listUsersScreen()
+  drawHeader("[DoorAuth Server] Users", "Current users and access state")
+  local users = listUsers()
+  if #users == 0 then
+    print("No users configured yet.")
+  else
+    for _, user in ipairs(users) do
+      printUserSummary(user)
+    end
+  end
+  pause()
+end
+
+local function showUserScreen()
+  drawHeader("[DoorAuth Server] User Detail", "Inspect one user at a time")
+  write("User name: ")
+  local name = trim(read())
+  local user = db.users[name]
+  local doors = listUserDoors(name) or {}
+  drawHeader("[DoorAuth Server] User Detail", name ~= "" and name or "No name entered")
+
+  if not user then
+    print("No such user.")
+    pause()
+    return
+  end
+
+  print("Code set: " .. tostring(user.codeHash and "yes" or "no"))
+  print("Card token: " .. tostring(user.cardToken and "yes" or "no"))
+  print("Doors:")
+  if #doors == 0 then
+    print("  (none)")
+  else
+    for _, door in ipairs(doors) do
+      print("  " .. door)
+    end
+  end
+
+  pause()
+end
+
+local function editUserCode()
+  drawHeader("[DoorAuth Server] User Code", "Add or update a per-user code")
+  write("User name: ")
+  local name = trim(read())
+  write("New code: ")
+  local code = read()
+  if name == "" or trim(code) == "" then
+    pause("Missing user name or code.")
+    return
+  end
+
+  local ok = addUser(name, code)
+  logEvent({event = "user_add", tag = name, ok = ok, source = "console"})
+  pause(ok and "Saved." or "Failed.")
+end
+
+local function removeUserScreen()
+  drawHeader("[DoorAuth Server] Remove User", "Delete a user and all of their access")
+  write("User name: ")
+  local name = trim(read())
+  if name == "" then
+    pause("Missing user name.")
+    return
+  end
+
+  local ok = removeUser(name)
+  logEvent({event = "user_del", tag = name, ok = ok, source = "console"})
+  pause(ok and "User removed." or "Not found.")
+end
+
+local function userDoorAccess(action)
+  drawHeader("[DoorAuth Server] User Door Access", action == "enable" and "Grant access to a door" or "Revoke access from a door")
+  write("User name: ")
+  local name = trim(read())
+  write("Door tag: ")
+  local tag = trim(read())
+  if name == "" or tag == "" then
+    pause("Missing user name or door tag.")
+    return
+  end
+
+  local ok = action == "enable" and enableUserDoor(name, tag) or disableUserDoor(name, tag)
+  logEvent({event = action == "enable" and "user_enable" or "user_disable", tag = tag, ok = ok, source = "console", detail = name})
+  pause(ok and "Updated." or "Failed.")
+end
+
+local function userDoorsScreen()
+  drawHeader("[DoorAuth Server] User Doors", "Show every door enabled for one user")
+  write("User name: ")
+  local name = trim(read())
+  local doors = listUserDoors(name)
+  drawHeader("[DoorAuth Server] User Doors", name ~= "" and name or "No name entered")
+
+  if not doors then
+    print("No such user.")
+  elseif #doors == 0 then
+    print("(none)")
+  else
+    for _, door in ipairs(doors) do
+      print("  " .. door)
+    end
+  end
+
+  pause()
+end
+
+local function userCardScreen(action)
+  drawHeader("[DoorAuth Server] User Cards", action == "issue" and "Issue a reusable card token" or "Clear a card token")
+  write("User name: ")
+  local name = trim(read())
+  if name == "" then
+    pause("Missing user name.")
+    return
+  end
+
+  if action == "issue" then
+    local token = issueUserCard(name)
+    local ok = token ~= nil
+    logEvent({event = "user_card_issue", tag = name, ok = ok, source = "console"})
+    if ok then
+      print("Card token:")
+      print(token)
+    else
+      print("Failed.")
+    end
+  else
+    local ok = clearUserCard(name)
+    logEvent({event = "user_card_clear", tag = name, ok = ok, source = "console"})
+    print(ok and "Cleared." or "Not found.")
+  end
+
+  pause()
+end
+
+local function userCardStatusScreen()
+  drawHeader("[DoorAuth Server] User Card Status", "View whether a user currently has a card token")
+  write("User name: ")
+  local name = trim(read())
+  local user = db.users[name]
+  drawHeader("[DoorAuth Server] User Card Status", name ~= "" and name or "No name entered")
+
+  if not user then
+    print("No such user.")
+  else
+    print("Card token: " .. tostring(user.cardToken and "yes" or "no"))
+    if user.cardToken then
+      print(user.cardToken)
+    end
+  end
+
+  pause()
+end
+
+local function lockdownScreen(enable)
+  lockdown = enable and true or false
+  logEvent({event = enable and "lockdown_on" or "lockdown_off", ok = true, source = "console"})
+  pause(enable and "LOCKDOWN ENABLED" or "Lockdown disabled.")
+end
+
+local function remoteOpenScreen()
+  drawHeader("[DoorAuth Server] Remote Open", "Trigger a door pulse from the server")
+  write("Door tag: ")
+  local tag = trim(read())
+  if tag == "" then
+    pause("Missing door tag.")
+    return
+  end
+
+  if lockdown then
+    logEvent({event = "remote_open", tag = tag, ok = false, source = "console", detail = "blocked_by_lockdown"})
+    pause("Blocked by lockdown.")
+    return
+  end
+
+  local door = db.doors[tag]
+  local duration = (door and door.openTime) or 3
+  broadcastOpen(tag, duration)
+  logEvent({event = "remote_open", tag = tag, ok = true, source = "console"})
+  pause("Door opened for " .. tostring(duration) .. " seconds.")
+end
+
+local function logsScreen()
+  local index = math.max(#logs - 24 + 1, 1)
+  while true do
+    drawHeader("[DoorAuth Server] Audit Logs", "W/S scroll, Enter returns")
+    if #logs == 0 then
+      print("No log entries yet.")
+    else
+      local last = math.min(index + 23, #logs)
+      for i = index, last do
+        local e = logs[i]
+        local status = e.ok == nil and "" or (e.ok and "OK" or "FAIL")
+        print(('%4d %s %-14s %s %s')
+          :format(i, e.time or "??:??", e.event or "?", status, e.detail or ""))
+      end
+      print(string.format("Showing %d-%d of %d", index, math.min(index + 23, #logs), #logs))
+    end
+
+    write("Command: ")
+    local choice = string.lower(trim(read()))
+    if choice == "w" then
+      index = math.max(1, index - 1)
+    elseif choice == "s" then
+      index = math.min(math.max(#logs - 23 + 1, 1), index + 1)
+    else
+      return
+    end
   end
 end
 
-local function consoleLoop()
-  help()
+local function systemScreen()
   while true do
-    term.setTextColor(colors.yellow) write("> ")
-    term.setTextColor(colors.white)
-    local line=read()
+    drawHeader("[DoorAuth Server] System", "Maintenance and device status")
+    print("1) List controllers")
+    print("2) Save now")
+    print("3) Reboot server")
+    print("4) Back")
+    write("Choose: ")
+    local choice = trim(read())
+    if choice == "1" then
+      showControllers()
+    elseif choice == "2" then
+      saveDB()
+      saveLogs()
+      pause("Saved.")
+    elseif choice == "3" then
+      saveDB()
+      saveLogs()
+      pause("Rebooting...")
+      sleep(0.2)
+      os.reboot()
+    elseif choice == "4" or choice == "" then
+      return
+    end
+  end
+end
 
-    local args={}
-    for w in line:gmatch("%S+") do table.insert(args,w) end
-    local cmd=args[1]
+local function doorsMenu()
+  while true do
+    drawHeader("[DoorAuth Server] Doors", "Manage door PINs and open times")
+    print("1) List doors")
+    print("2) Show door")
+    print("3) Add PIN")
+    print("4) Remove PIN")
+    print("5) Set open time")
+    print("6) Remove door")
+    print("7) Back")
+    write("Choose: ")
+    local choice = trim(read())
+    if choice == "1" then
+      showDoorList()
+    elseif choice == "2" then
+      showDoorDetail()
+    elseif choice == "3" then
+      editDoorPin("add")
+    elseif choice == "4" then
+      editDoorPin("del")
+    elseif choice == "5" then
+      setDoorOpenTime()
+    elseif choice == "6" then
+      removeDoor()
+    elseif choice == "7" or choice == "" then
+      return
+    end
+  end
+end
 
-    if cmd=="help" then help()
-    elseif cmd=="cls" or cmd=="clear" then term.clear() term.setCursorPos(1,1)
-
-    elseif cmd=="controllers" then
-      for tag,set in pairs(controllersByTag) do
-        local ids={}
-        for id,_ in pairs(set) do table.insert(ids,id) end
-        print(tag.." -> "..table.concat(ids,",")) end
-
-    elseif cmd=="save" then saveDB() saveLogs()
-    elseif cmd=="reboot" then saveDB() saveLogs() sleep(0.2) os.reboot()
-
-    elseif cmd=="list" then
-      if requireAdmin() then
-        for tag,d in pairs(db.doors) do
-          local userCount = 0
-          for _,user in pairs(db.users) do
-            if user and user.doors and user.doors[tag] then
-              userCount = userCount + 1
-            end
-          end
-          print(("- %s (pins:%d, open:%ds, users:%d)")
-            :format(tag,#d.pins,d.openTime or 3,userCount))
+local function usersMenu()
+  while true do
+    drawHeader("[DoorAuth Server] Users", "Manage per-user codes, doors, and cards")
+    print("1) List users")
+    print("2) Show user")
+    print("3) Add or update code")
+    print("4) Remove user")
+    print("5) Enable door for user")
+    print("6) Disable door for user")
+    print("7) Show user's doors")
+    print("8) Issue card token")
+    print("9) Clear card token")
+    print("10) Clear user code")
+    print("11) Clear all doors")
+    print("12) Clone access from user")
+    print("13) Search users")
+    print("14) Card status")
+    print("15) Back")
+    write("Choose: ")
+    local choice = trim(read())
+    if choice == "1" then
+      listUsersScreen()
+    elseif choice == "2" then
+      showUserScreen()
+    elseif choice == "3" then
+      editUserCode()
+    elseif choice == "4" then
+      removeUserScreen()
+    elseif choice == "5" then
+      userDoorAccess("enable")
+    elseif choice == "6" then
+      userDoorAccess("disable")
+    elseif choice == "7" then
+      userDoorsScreen()
+    elseif choice == "8" then
+      userCardScreen("issue")
+    elseif choice == "9" then
+      userCardScreen("clear")
+    elseif choice == "10" then
+      drawHeader("[DoorAuth Server] Users", "Clear a user's code")
+      write("User name: ")
+      local name = trim(read())
+      if name ~= "" then
+        local ok = clearUserCode(name)
+        logEvent({event = "user_clear_code", tag = name, ok = ok, source = "console"})
+        pause(ok and "Code cleared." or "Not found.")
+      else
+        pause("Missing user name.")
+      end
+    elseif choice == "11" then
+      drawHeader("[DoorAuth Server] Users", "Remove every enabled door from a user")
+      write("User name: ")
+      local name = trim(read())
+      if name ~= "" then
+        local ok = clearUserDoors(name)
+        logEvent({event = "user_clear_doors", tag = name, ok = ok, source = "console"})
+        pause(ok and "Doors cleared." or "Not found.")
+      else
+        pause("Missing user name.")
+      end
+    elseif choice == "12" then
+      drawHeader("[DoorAuth Server] Users", "Clone access from one user to another")
+      write("Source user: ")
+      local source = trim(read())
+      write("Target user: ")
+      local target = trim(read())
+      write("Copy code too? (yes/no): ")
+      local copyCode = trim(read())
+      if source ~= "" and target ~= "" then
+        local ok = cloneUserAccess(source, target, copyCode == "yes" or copyCode == "y" or copyCode == "true" or copyCode == "1")
+        logEvent({event = "user_clone", tag = target, ok = ok, source = "console", detail = source})
+        pause(ok and "Access cloned." or "Failed.")
+      else
+        pause("Missing source or target user.")
+      end
+    elseif choice == "13" then
+      drawHeader("[DoorAuth Server] Users", "Search by name, door, code, or card")
+      write("Search: ")
+      local query = trim(read())
+      local users = searchUsers(query)
+      if #users == 0 then
+        print("No matching users.")
+      else
+        for _, user in ipairs(users) do
+          printUserSummary(user)
         end
       end
+      pause()
+    elseif choice == "14" then
+      userCardStatusScreen()
+    elseif choice == "15" or choice == "" then
+      return
+    end
+  end
+end
 
-    elseif cmd=="show" and args[2] then
-      if requireAdmin() then
-        local d=db.doors[args[2]]
-        if not d then print("No such door.") else
-          print("OpenTime:",d.openTime)
-          print("Pins:")
-          for _,p in ipairs(d.pins) do print("  "..p) end
-          print("Users:")
-          local found = false
-          for name,user in pairs(db.users) do
-            if user and user.doors and user.doors[args[2]] then
-              found = true
-              print("  "..name..(user.cardToken and " [card]" or ""))
-            end
-          end
-          if not found then print("  (none)") end
-        end
-      end
+local function securityMenu()
+  while true do
+    drawHeader("[DoorAuth Server] Security", lockdown and "Lockdown is currently ON" or "Lockdown is currently OFF")
+    print("1) Enable lockdown")
+    print("2) Disable lockdown")
+    print("3) Remote open door")
+    print("4) Back")
+    write("Choose: ")
+    local choice = trim(read())
+    if choice == "1" then
+      lockdownScreen(true)
+    elseif choice == "2" then
+      lockdownScreen(false)
+    elseif choice == "3" then
+      remoteOpenScreen()
+    elseif choice == "4" or choice == "" then
+      return
+    end
+  end
+end
 
-    elseif cmd=="add" and args[2] and args[3] then
-      if requireAdmin() then
-        local ok=addPin(args[2],args[3])
-        logEvent({event="pin_add",tag=args[2],ok=ok,source="console"})
-        print(ok and "Added." or "Already present.")
-      end
+local function helpScreen()
+  drawHeader("[DoorAuth Server] Help", "Menu-driven console actions")
+  print("Use the numbered menus to manage doors, users, cards, logs, and server maintenance.")
+  print("The admin PIN prompt still protects privileged actions.")
+  pause()
+end
 
-    elseif cmd=="user_card_issue" and args[2] then
-      if requireAdmin() then
-        local token = issueUserCard(args[2])
-        local ok = token ~= nil
-        logEvent({event="user_card_issue",tag=args[2],ok=ok,source="console"})
-        if ok then
-          print("Card token:", token)
-        else
-          print("Failed.")
-        end
-      end
-
-    elseif cmd=="user_card_clear" and args[2] then
-      if requireAdmin() then
-        local ok = clearUserCard(args[2])
-        logEvent({event="user_card_clear",tag=args[2],ok=ok,source="console"})
-        print(ok and "Cleared." or "Not found.")
-      end
-
-    elseif cmd=="user_add" and args[2] and args[3] then
-      if requireAdmin() then
-        local ok=addUser(args[2],args[3])
-        logEvent({event="user_add",tag=args[2],ok=ok,source="console"})
-        print(ok and "User saved." or "Failed.")
-      end
-
-    elseif cmd=="user_del" and args[2] then
-      if requireAdmin() then
-        local ok=removeUser(args[2])
-        logEvent({event="user_del",tag=args[2],ok=ok,source="console"})
-        print(ok and "User removed." or "Not found.")
-      end
-
-    elseif cmd=="user_enable" and args[2] and args[3] then
-      if requireAdmin() then
-        local ok=enableUserDoor(args[2],args[3])
-        logEvent({event="user_enable",tag=args[3],ok=ok,source="console",detail=args[2]})
-        print(ok and "Door enabled for user." or "Failed.")
-      end
-
-    elseif cmd=="user_disable" and args[2] and args[3] then
-      if requireAdmin() then
-        local ok=disableUserDoor(args[2],args[3])
-        logEvent({event="user_disable",tag=args[3],ok=ok,source="console",detail=args[2]})
-        print(ok and "Door disabled for user." or "Failed.")
-      end
-
-    elseif cmd=="user_doors" and args[2] then
-      if requireAdmin() then
-        local doors = listUserDoors(args[2])
-        if not doors then
-          print("No such user.")
-        else
-          print("Doors for "..args[2]..":")
-          if #doors == 0 then
-            print("  (none)")
-          else
-            for _,door in ipairs(doors) do
-              print("  "..door)
-            end
-          end
-        end
-      end
-
-    elseif cmd=="user_card_show" and args[2] then
-      if requireAdmin() then
-        local user = db.users[args[2]]
-        if not user then
-          print("No such user.")
-        else
-          print("Card:", user.cardToken and "yes" or "no")
-        end
-      end
-
-    elseif cmd=="user_list" then
-      if requireAdmin() then
-        local users = listUsers()
-        if #users == 0 then
-          print("No users configured.")
-        else
-          for _,user in ipairs(users) do
-            print(("- %s (doors:%d, card:%s)"):format(user.name, user.doorCount or 0, user.hasCard and "yes" or "no"))
-          end
-        end
-      end
-
-    elseif cmd=="opentime" and args[2] and tonumber(args[3]) then
-      if requireAdmin() then
-        ensureDoor(args[2])
-        db.doors[args[2]].openTime = tonumber(args[3])
-        logEvent({event="opentime_set",tag=args[2],ok=true,source="console"})
-        print("Updated.")
-      end
-
-    elseif cmd=="remove" and args[2] then
-      if requireAdmin() then
-        db.doors[args[2]]=nil
-        logEvent({event="door_remove",tag=args[2],ok=true,source="console"})
-        print("Door removed.")
-      end
-
-    elseif cmd=="lockdown_on" then
-      if requireAdmin() then
-        lockdown=true
-        logEvent({event="lockdown_on",ok=true,source="console"})
-        print("LOCKDOWN ENABLED")
-      end
-
-    elseif cmd=="lockdown_off" then
-      if requireAdmin() then
-        lockdown=false
-        logEvent({event="lockdown_off",ok=true,source="console"})
-        print("Lockdown disabled.")
-      end
-
-    elseif cmd=="logs" then
-      printLogsConsole(40)
-
-    elseif cmd and cmd~="" then
-      print("Unknown command.")
+local function consoleLoop()
+  while true do
+    drawHeader("[DoorAuth Server] Console", "Structured admin navigation")
+    print("1) Doors")
+    print("2) Users")
+    print("3) Security")
+    print("4) Logs")
+    print("5) System")
+    print("6) Help")
+    write("Choose: ")
+    local choice = trim(read())
+    if choice == "1" then
+      doorsMenu()
+    elseif choice == "2" then
+      usersMenu()
+    elseif choice == "3" then
+      securityMenu()
+    elseif choice == "4" then
+      logsScreen()
+    elseif choice == "5" then
+      systemScreen()
+    elseif choice == "6" then
+      helpScreen()
     end
   end
 end

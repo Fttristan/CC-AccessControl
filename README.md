@@ -14,6 +14,8 @@ DoorAuth is a fully modular, distributed, secure access-control system for CC:Tw
 - Audit logging  
 - Lockdown mode  
 - Client heartbeat monitoring  
+- Searchable and cloneable user management  
+- Reusable card token issuance  
 
 All clients (keypads, controllers, pocket apps) are stateless for maximum security and reliability.
 
@@ -56,6 +58,8 @@ DoorAuth consists of **five major components**:
 - Add/remove users  
 - Enable/disable doors per user  
 - View user door access  
+- Clear user code, clear all doors, clone access  
+- Search users  
 - Door management  
 - Lockdown mode  
 - Remote door open  
@@ -81,6 +85,7 @@ door_controller.lua
 keypad_door.lua  
 admin_remote.lua  
 door_fob.lua  
+doorauth_api_example.lua  
 
 ## 🚀 Installation
 1. Install scripts on devices  
@@ -97,6 +102,12 @@ door_fob.lua
 6. Test fob  
 7. Lockdown test  
 8. Check audit logs  
+
+## 🔌 API Example
+- Load `doorauth_api_example.lua` with `os.loadAPI("doorauth_api_example")`  
+- Use `doorauth_api_example.login(pin)` to create an admin session  
+- Call `doorauth_api_example.listUsers(session)` or `doorauth_api_example.addUser(session, name, code)` from your own programs  
+- The helper auto-renews the admin session if it expires  
 
 ## 🔐 Security Model
 - Server holds all PINs  

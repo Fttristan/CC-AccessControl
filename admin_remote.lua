@@ -198,6 +198,49 @@ local function setColor(col)
   end
 end
 
+local function drawHeader(title, subtitle)
+  term.clear()
+  term.setCursorPos(1,1)
+  setColor(colors.cyan)
+  print(title)
+  setColor(colors.white)
+  if subtitle and subtitle ~= "" then
+    print(subtitle)
+  end
+  print(string.rep("-", 38))
+end
+
+local function pause(message)
+  if message and message ~= "" then
+    print(message)
+  end
+  print("Press Enter to continue.")
+  read()
+end
+
+local function loginWithPin(pin)
+  local server = findServer()
+  if not server then
+    return nil, "Server not found!"
+  end
+
+  local stamp = tostring(os.epoch("utc"))
+  local sig = hash(hash(pin) .. stamp)
+
+  rednet.send(server, {
+    type = "admin_login",
+    timestamp = stamp,
+    sig = sig,
+  }, PROTOCOL)
+
+  local id, msg = rednet.receive(PROTOCOL, REQUEST_TIMEOUT)
+  if id == server and msg and msg.type == "admin_login_ok" then
+    return msg.token, nil
+  end
+
+  return nil, "Login failed."
+end
+
 local function isPocketComputer()
   return pocket ~= nil and type(pocket.equipBack) == "function"
 end
@@ -266,37 +309,16 @@ end
 -- LOGIN
 ---------------------------------------------------
 local function login()
-  term.clear()
-  term.setCursorPos(1,1)
-  print("=== DoorAuth Admin Remote ===")
-  print("Enter Admin PIN:")
+  drawHeader("[DoorAuth Admin Remote] Login", "Enter the admin PIN to open the session")
   local pin=read("*")
-
-  local server=findServer()
-  if not server then
-    print("Server not found!")
-    sleep(1) return nil
-  end
-
-  local stamp=tostring(os.epoch("utc"))
-  local sig=hash(hash(pin) .. stamp)
-
-  rednet.send(server,{
-    type="admin_login",
-    timestamp=stamp,
-    sig=sig
-  },PROTOCOL)
-
-  local id,msg=rednet.receive(PROTOCOL,REQUEST_TIMEOUT)
-  if id==server and msg and msg.type=="admin_login_ok" then
+  local token, err = loginWithPin(pin)
+  if token then
     sleep(0.4)
-    term.clear()
-    term.setCursorPos(1,1)
-    return msg.token, pin
+    drawHeader("[DoorAuth Admin Remote] Login", "Session established")
+    return { token = token, pin = pin, startedAt = os.epoch("utc") }
   end
 
-  print("Login failed.")
-  sleep(1)
+  pause(err or "Login failed.")
   return nil
 end
 
@@ -311,33 +333,47 @@ local function adminCmd(token,cmdTable)
     return nil
   end
 
-  cmdTable.type="admin_cmd"
-  cmdTable.token=token
+  local function sendOnce(currentToken)
+    cmdTable.type = "admin_cmd"
+    cmdTable.token = currentToken
 
-  rednet.send(server,cmdTable,PROTOCOL)
-  local _,msg=rednet.receive(PROTOCOL,REQUEST_TIMEOUT)
+    rednet.send(server, cmdTable, PROTOCOL)
+    local _, msg = rednet.receive(PROTOCOL, REQUEST_TIMEOUT)
+    return msg
+  end
+
+  local msg = sendOnce(token.token)
+  if msg and msg.type == "admin_denied" and token.pin then
+    drawHeader("[DoorAuth Admin Remote] Session", "Session expired, reauthenticating")
+    local renewed, err = loginWithPin(token.pin)
+    if renewed then
+      token.token = renewed
+      token.startedAt = os.epoch("utc")
+      msg = sendOnce(token.token)
+    else
+      pause(err or "Unable to renew the session.")
+      return nil
+    end
+  end
+
   return msg
 end
 
 ---------------------------------------------------
 -- LOG VIEWER (Mode 3: interactive scroll)
 ---------------------------------------------------
-local function viewLogs(token)
-  local msg = adminCmd(token, {cmd="logs"})
+local function viewLogs(session)
+  local msg = adminCmd(session, {cmd="logs"})
   if not msg or msg.type ~= "admin_logs" or type(msg.logs) ~= "table" then
-    term.clear()
-    term.setCursorPos(1,1)
-    print("No logs or error fetching logs.")
-    sleep(1.2)
+    drawHeader("[DoorAuth Admin Remote] Logs", "No logs or error fetching logs")
+    pause()
     return
   end
 
   local logs = msg.logs
   if #logs == 0 then
-    term.clear()
-    term.setCursorPos(1,1)
-    print("No log entries yet.")
-    sleep(1.2)
+    drawHeader("[DoorAuth Admin Remote] Logs", "No log entries yet")
+    pause()
     return
   end
 
@@ -345,10 +381,7 @@ local function viewLogs(token)
   local pos = math.max(#logs - maxVisible + 1, 1) -- start near newest
 
   local function draw()
-    term.clear()
-    term.setCursorPos(1,1)
-    print("=== Audit Logs ("..#logs.." entries) ===")
-    print("W/S = scroll, Q = back")
+    drawHeader("[DoorAuth Admin Remote] Audit Logs", "W/S scroll, Q back")
 
     local last = math.min(pos + maxVisible - 1, #logs)
     for i = pos, last do
@@ -406,35 +439,32 @@ local function viewLogs(token)
     end
   end
 
-  term.clear()
-  term.setCursorPos(1,1)
+  drawHeader("[DoorAuth Admin Remote] Logs", "Returning to menu")
 end
 
-local function manageUsers(token)
+local function manageUsers(session)
   while true do
-    term.clear()
-    term.setCursorPos(1,1)
-    print([[=== User Access ===
-
-1) List Users
-2) Show User
-3) Add/Update User Code
-4) Remove User
-5) Enable Door For User
-6) Disable Door For User
-7) Show Doors For User
-8) Issue/Write Magnetic Card
-9) Clear Magnetic Card
-10) Back
-]])
-
+    drawHeader("[DoorAuth Admin Remote] Users", "Manage per-user codes, doors, and cards")
+    print("1) List users")
+    print("2) Show user")
+    print("3) Add or update code")
+    print("4) Remove user")
+    print("5) Enable door for user")
+    print("6) Disable door for user")
+    print("7) Show user's doors")
+    print("8) Issue/write magnetic card")
+    print("9) Clear magnetic card")
+    print("10) Clear user code")
+    print("11) Clear all doors")
+    print("12) Clone access from user")
+    print("13) Search users")
+    print("14) Back")
     write("Choose: ")
     local c = read()
 
     if c == "1" then
-      local msg = adminCmd(token, {cmd="user_list"})
-      term.clear()
-      term.setCursorPos(1,1)
+      local msg = adminCmd(session, {cmd="user_list"})
+      drawHeader("[DoorAuth Admin Remote] Users", "Registered users")
       if msg and msg.users then
         print("Users:")
         for _,user in ipairs(msg.users) do
@@ -448,9 +478,8 @@ local function manageUsers(token)
 
     elseif c == "2" then
       write("User name: ") local name = read()
-      local msg = adminCmd(token, {cmd="user_show", name=name})
-      term.clear()
-      term.setCursorPos(1,1)
+      local msg = adminCmd(session, {cmd="user_show", name=name})
+      drawHeader("[DoorAuth Admin Remote] Users", name)
       if msg and msg.user then
         print("User:", msg.name or name)
         print("Code set:", msg.user.codeHash and "yes" or "no")
@@ -466,43 +495,38 @@ local function manageUsers(token)
     elseif c == "3" then
       write("User name: ") local name = read()
       write("New code: ") local code = read()
-      local msg = adminCmd(token, {cmd="user_add", name=name, code=code})
-      term.clear()
-      term.setCursorPos(1,1)
+      local msg = adminCmd(session, {cmd="user_add", name=name, code=code})
+      drawHeader("[DoorAuth Admin Remote] Users", name)
       print(msg and msg.ok and "Saved." or "Failed.")
       sleep(1)
 
     elseif c == "4" then
       write("User name: ") local name = read()
-      local msg = adminCmd(token, {cmd="user_del", name=name})
-      term.clear()
-      term.setCursorPos(1,1)
+      local msg = adminCmd(session, {cmd="user_del", name=name})
+      drawHeader("[DoorAuth Admin Remote] Users", name)
       print(msg and msg.ok and "Removed." or "Not found or error.")
       sleep(1)
 
     elseif c == "5" then
       write("User name: ") local name = read()
       write("Door tag: ") local tag = read()
-      local msg = adminCmd(token, {cmd="user_enable", name=name, tag=tag})
-      term.clear()
-      term.setCursorPos(1,1)
+      local msg = adminCmd(session, {cmd="user_enable", name=name, tag=tag})
+      drawHeader("[DoorAuth Admin Remote] Users", name .. " -> " .. tag)
       print(msg and msg.ok and "Enabled." or "Failed.")
       sleep(1)
 
     elseif c == "6" then
       write("User name: ") local name = read()
       write("Door tag: ") local tag = read()
-      local msg = adminCmd(token, {cmd="user_disable", name=name, tag=tag})
-      term.clear()
-      term.setCursorPos(1,1)
+      local msg = adminCmd(session, {cmd="user_disable", name=name, tag=tag})
+      drawHeader("[DoorAuth Admin Remote] Users", name .. " -> " .. tag)
       print(msg and msg.ok and "Disabled." or "Failed.")
       sleep(1)
 
     elseif c == "7" then
       write("User name: ") local name = read()
-      local msg = adminCmd(token, {cmd="user_doors", name=name})
-      term.clear()
-      term.setCursorPos(1,1)
+      local msg = adminCmd(session, {cmd="user_doors", name=name})
+      drawHeader("[DoorAuth Admin Remote] Users", name)
       if msg and msg.doors then
         print("Doors for "..(msg.name or name)..":")
         if #msg.doors == 0 then
@@ -520,22 +544,19 @@ local function manageUsers(token)
 
     elseif c == "8" then
       if isPocketComputer() then
-        term.clear()
-        term.setCursorPos(1,1)
+        drawHeader("[DoorAuth Admin Remote] Users", name)
         print("Card writing is not supported on pocket computers.")
         sleep(1.5)
       else
         local manipName, manip = findCardManipulator()
         if not manipName then
-          term.clear()
-          term.setCursorPos(1,1)
+          drawHeader("[DoorAuth Admin Remote] Users", name)
           print("No magnetic card manipulator found.")
           sleep(1.5)
         else
           write("User name: ") local name = read()
-          local msg = adminCmd(token, {cmd="user_card_issue", name=name})
-          term.clear()
-          term.setCursorPos(1,1)
+          local msg = adminCmd(session, {cmd="user_card_issue", name=name})
+          drawHeader("[DoorAuth Admin Remote] Users", name)
           if not msg or not msg.ok or not msg.token then
             print("Failed to issue card token.")
             sleep(1.5)
@@ -546,7 +567,7 @@ local function manageUsers(token)
             if ok then
               print("Card written.")
             else
-              adminCmd(token, {cmd="user_card_clear", name=name})
+              adminCmd(session, {cmd="user_card_clear", name=name})
               print("Write failed: " .. tostring(err))
             end
             print("\nPress Enter…")
@@ -557,13 +578,51 @@ local function manageUsers(token)
 
     elseif c == "9" then
       write("User name: ") local name = read()
-      local msg = adminCmd(token, {cmd="user_card_clear", name=name})
-      term.clear()
-      term.setCursorPos(1,1)
+      local msg = adminCmd(session, {cmd="user_card_clear", name=name})
+      drawHeader("[DoorAuth Admin Remote] Users", name)
       print(msg and msg.ok and "Card cleared." or "Not found or error.")
       sleep(1)
 
     elseif c == "10" then
+      write("User name: ") local name = read()
+      local msg = adminCmd(session, {cmd="user_clear_code", name=name})
+      drawHeader("[DoorAuth Admin Remote] Users", name)
+      print(msg and msg.ok and "Code cleared." or "Not found or error.")
+      sleep(1)
+
+    elseif c == "11" then
+      write("User name: ") local name = read()
+      local msg = adminCmd(session, {cmd="user_clear_doors", name=name})
+      drawHeader("[DoorAuth Admin Remote] Users", name)
+      print(msg and msg.ok and "Doors cleared." or "Not found or error.")
+      sleep(1)
+
+    elseif c == "12" then
+      write("Source user: ") local source = read()
+      write("Target user: ") local target = read()
+      write("Copy code too? (yes/no): ") local copyCode = read()
+      local copyCodeValue = tostring(copyCode or ""):lower()
+      local includeCode = copyCodeValue == "yes" or copyCodeValue == "y" or copyCodeValue == "true" or copyCodeValue == "1"
+      local msg = adminCmd(session, {cmd="user_clone", source=source, name=target, includeCode=includeCode})
+      drawHeader("[DoorAuth Admin Remote] Users", target)
+      print(msg and msg.ok and "Access cloned." or "Failed.")
+      sleep(1)
+
+    elseif c == "13" then
+      write("Search: ") local query = read()
+      local msg = adminCmd(session, {cmd="user_search", query=query})
+      drawHeader("[DoorAuth Admin Remote] Users", query)
+      if msg and msg.users then
+        for _,user in ipairs(msg.users) do
+          print(('%s (doors:%d, card:%s)'):format(user.name, user.doorCount or 0, user.hasCard and "yes" or "no"))
+        end
+      else
+        print("No matching users.")
+      end
+      print("\nPress Enter…")
+      read()
+
+    elseif c == "14" then
       return
     end
   end
@@ -572,32 +631,27 @@ end
 ---------------------------------------------------
 -- MAIN MENU
 ---------------------------------------------------
-local function mainMenu(token)
+local function mainMenu(session)
   while true do
-    term.clear()
-    term.setCursorPos(1,1)
-    print([[=== DoorAuth Admin ===
-
-1) List Doors
-2) Show Door
-3) Add PIN
-4) Delete PIN
-5) Remove Door
-6) Set OpenTime
-7) Logout
-8) Remote Open Door
-9) LOCKDOWN ON
-10) LOCKDOWN OFF
-  11) View Audit Logs
-  12) User Access Management
-]])
-
+    drawHeader("[DoorAuth Admin Remote] Main Menu", "Doors, security, logs, and user management")
+    print("1) List doors")
+    print("2) Show door")
+    print("3) Add PIN")
+    print("4) Delete PIN")
+    print("5) Remove door")
+    print("6) Set open time")
+    print("7) Logout")
+    print("8) Remote open door")
+    print("9) Enable lockdown")
+    print("10) Disable lockdown")
+    print("11) View audit logs")
+    print("12) User access management")
     write("Choose: ")
     local c=read()
 
     if c=="1" then
-      local msg=adminCmd(token,{cmd="list"})
-      term.clear() term.setCursorPos(1,1)
+      local msg=adminCmd(session,{cmd="list"})
+      drawHeader("[DoorAuth Admin Remote] Doors", "Registered door list")
       if msg and msg.doors then
         print("Doors:")
         for tag,data in pairs(msg.doors) do
@@ -610,8 +664,8 @@ local function mainMenu(token)
 
     elseif c=="2" then
       write("Door tag: ") local tag=read()
-      local msg=adminCmd(token,{cmd="show",tag=tag})
-      term.clear() term.setCursorPos(1,1)
+      local msg=adminCmd(session,{cmd="show",tag=tag})
+      drawHeader("[DoorAuth Admin Remote] Doors", tag)
       if msg and msg.door then
         print("Door:",tag)
         print("OpenTime:",msg.door.openTime)
@@ -625,38 +679,38 @@ local function mainMenu(token)
     elseif c=="3" then
       write("Door tag: ") local tag=read()
       write("New PIN: ") local pin=read()
-      local msg=adminCmd(token,{cmd="add",tag=tag,pin=pin})
-      term.clear() term.setCursorPos(1,1)
+      local msg=adminCmd(session,{cmd="add",tag=tag,pin=pin})
+      drawHeader("[DoorAuth Admin Remote] Doors", tag)
       print(msg and msg.ok and "Added." or "Already exists or error.")
       sleep(1)
 
     elseif c=="4" then
       write("Door tag: ") local tag=read()
       write("PIN to remove: ") local pin=read()
-      local msg=adminCmd(token,{cmd="del",tag=tag,pin=pin})
-      term.clear() term.setCursorPos(1,1)
+      local msg=adminCmd(session,{cmd="del",tag=tag,pin=pin})
+      drawHeader("[DoorAuth Admin Remote] Doors", tag)
       print(msg and msg.ok and "Removed." or "Not found or error.")
       sleep(1)
 
     elseif c=="5" then
       write("Door tag: ") local tag=read()
-      local msg=adminCmd(token,{cmd="remove",tag=tag})
-      term.clear() term.setCursorPos(1,1)
+      local msg=adminCmd(session,{cmd="remove",tag=tag})
+      drawHeader("[DoorAuth Admin Remote] Doors", tag)
       print("Door removed.")
       sleep(1)
 
     elseif c=="6" then
       write("Door tag: ") local tag=read()
       write("Seconds: ") local sec=read()
-      local msg=adminCmd(token,{cmd="opentime",tag=tag,seconds=sec})
-      term.clear() term.setCursorPos(1,1)
+      local msg=adminCmd(session,{cmd="opentime",tag=tag,seconds=sec})
+      drawHeader("[DoorAuth Admin Remote] Doors", tag)
       print("Updated.")
       sleep(1)
 
     elseif c=="8" then
       write("Door tag to open: ") local tag=read()
-      local msg=adminCmd(token,{cmd="open",tag=tag})
-      term.clear() term.setCursorPos(1,1)
+      local msg=adminCmd(session,{cmd="open",tag=tag})
+      drawHeader("[DoorAuth Admin Remote] Security", tag)
       if msg and msg.ok then
         print("Door opened.")
       else
@@ -665,28 +719,28 @@ local function mainMenu(token)
       sleep(1)
 
     elseif c=="9" then
-      local msg=adminCmd(token,{cmd="lockdown_on"})
-      term.clear() term.setCursorPos(1,1)
+      local msg=adminCmd(session,{cmd="lockdown_on"})
+      drawHeader("[DoorAuth Admin Remote] Security", "Lockdown enabled")
       print("LOCKDOWN ENABLED")
       sleep(1)
 
     elseif c=="10" then
-      local msg=adminCmd(token,{cmd="lockdown_off"})
-      term.clear() term.setCursorPos(1,1)
+      local msg=adminCmd(session,{cmd="lockdown_off"})
+      drawHeader("[DoorAuth Admin Remote] Security", "Lockdown disabled")
       print("Lockdown disabled.")
       sleep(1)
 
     elseif c=="11" then
-      viewLogs(token)
+      viewLogs(session)
 
     elseif c=="12" then
-      manageUsers(token)
+      manageUsers(session)
 
     elseif c=="7" then
-      term.clear() term.setCursorPos(1,1)
+      drawHeader("[DoorAuth Admin Remote] Session", "Logged out")
       print("Logged out.")
       sleep(0.4)
-      term.clear() term.setCursorPos(1,1)
+      drawHeader("[DoorAuth Admin Remote] Session", "Returning to login")
       return
     end
   end
@@ -698,6 +752,6 @@ end
 openModems()
 
 while true do
-  local token=login()
-  if token then mainMenu(token) end
+  local session=login()
+  if session then mainMenu(session) end
 end
