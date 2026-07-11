@@ -628,88 +628,98 @@ local function manageUsers(session)
   end
 end
 
----------------------------------------------------
--- MAIN MENU
----------------------------------------------------
-local function mainMenu(session)
+local function doorsMenu(session)
   while true do
-    drawHeader("[DoorAuth Admin Remote] Main Menu", "Doors, security, logs, and user management")
+    drawHeader("[DoorAuth Admin Remote] Doors", "Manage door PINs and open times")
     print("1) List doors")
     print("2) Show door")
     print("3) Add PIN")
-    print("4) Delete PIN")
+    print("4) Remove PIN")
     print("5) Remove door")
     print("6) Set open time")
-    print("7) Logout")
-    print("8) Remote open door")
-    print("9) Enable lockdown")
-    print("10) Disable lockdown")
-    print("11) View audit logs")
-    print("12) User access management")
+    print("7) Back")
     write("Choose: ")
-    local c=read()
+    local c = read()
 
-    if c=="1" then
-      local msg=adminCmd(session,{cmd="list"})
+    if c == "1" then
+      local msg = adminCmd(session, {cmd = "list"})
       drawHeader("[DoorAuth Admin Remote] Doors", "Registered door list")
       if msg and msg.doors then
         print("Doors:")
-        for tag,data in pairs(msg.doors) do
-          print(("%s (pins:%d, open:%s)"):format(tag,#data.pins,data.openTime))
+        for tag, data in pairs(msg.doors) do
+          print(("%s (pins:%d, open:%s)"):format(tag, #data.pins, data.openTime))
         end
       else
         print("No response.")
       end
-      print("\nPress Enter…") read()
+      print("\nPress Enter…")
+      read()
 
-    elseif c=="2" then
-      write("Door tag: ") local tag=read()
-      local msg=adminCmd(session,{cmd="show",tag=tag})
+    elseif c == "2" then
+      write("Door tag: ") local tag = read()
+      local msg = adminCmd(session, {cmd = "show", tag = tag})
       drawHeader("[DoorAuth Admin Remote] Doors", tag)
       if msg and msg.door then
-        print("Door:",tag)
-        print("OpenTime:",msg.door.openTime)
+        print("Door:", tag)
+        print("OpenTime:", msg.door.openTime)
         print("Pins:")
-        for _,p in ipairs(msg.door.pins) do print("  "..p) end
+        for _, p in ipairs(msg.door.pins) do print("  " .. p) end
       else
         print("No such door.")
       end
-      print("\nPress Enter…") read()
+      print("\nPress Enter…")
+      read()
 
-    elseif c=="3" then
-      write("Door tag: ") local tag=read()
-      write("New PIN: ") local pin=read()
-      local msg=adminCmd(session,{cmd="add",tag=tag,pin=pin})
+    elseif c == "3" then
+      write("Door tag: ") local tag = read()
+      write("New PIN: ") local pin = read()
+      local msg = adminCmd(session, {cmd = "add", tag = tag, pin = pin})
       drawHeader("[DoorAuth Admin Remote] Doors", tag)
       print(msg and msg.ok and "Added." or "Already exists or error.")
       sleep(1)
 
-    elseif c=="4" then
-      write("Door tag: ") local tag=read()
-      write("PIN to remove: ") local pin=read()
-      local msg=adminCmd(session,{cmd="del",tag=tag,pin=pin})
+    elseif c == "4" then
+      write("Door tag: ") local tag = read()
+      write("PIN to remove: ") local pin = read()
+      local msg = adminCmd(session, {cmd = "del", tag = tag, pin = pin})
       drawHeader("[DoorAuth Admin Remote] Doors", tag)
       print(msg and msg.ok and "Removed." or "Not found or error.")
       sleep(1)
 
-    elseif c=="5" then
-      write("Door tag: ") local tag=read()
-      local msg=adminCmd(session,{cmd="remove",tag=tag})
+    elseif c == "5" then
+      write("Door tag: ") local tag = read()
+      local msg = adminCmd(session, {cmd = "remove", tag = tag})
       drawHeader("[DoorAuth Admin Remote] Doors", tag)
-      print("Door removed.")
+      print(msg and msg.ok and "Door removed." or "No such door.")
       sleep(1)
 
-    elseif c=="6" then
-      write("Door tag: ") local tag=read()
-      write("Seconds: ") local sec=read()
-      local msg=adminCmd(session,{cmd="opentime",tag=tag,seconds=sec})
+    elseif c == "6" then
+      write("Door tag: ") local tag = read()
+      write("Seconds: ") local sec = read()
+      local msg = adminCmd(session, {cmd = "opentime", tag = tag, seconds = sec})
       drawHeader("[DoorAuth Admin Remote] Doors", tag)
-      print("Updated.")
+      print(msg and msg.ok and "Updated." or "Failed.")
       sleep(1)
 
-    elseif c=="8" then
-      write("Door tag to open: ") local tag=read()
-      local msg=adminCmd(session,{cmd="open",tag=tag})
+    elseif c == "7" or c == "" then
+      return
+    end
+  end
+end
+
+local function securityMenu(session)
+  while true do
+    drawHeader("[DoorAuth Admin Remote] Security", "Lockdown and remote door control")
+    print("1) Remote open door")
+    print("2) Enable lockdown")
+    print("3) Disable lockdown")
+    print("4) Back")
+    write("Choose: ")
+    local c = read()
+
+    if c == "1" then
+      write("Door tag to open: ") local tag = read()
+      local msg = adminCmd(session, {cmd = "open", tag = tag})
       drawHeader("[DoorAuth Admin Remote] Security", tag)
       if msg and msg.ok then
         print("Door opened.")
@@ -718,25 +728,57 @@ local function mainMenu(session)
       end
       sleep(1)
 
-    elseif c=="9" then
-      local msg=adminCmd(session,{cmd="lockdown_on"})
+    elseif c == "2" then
+      local msg = adminCmd(session, {cmd = "lockdown_on"})
       drawHeader("[DoorAuth Admin Remote] Security", "Lockdown enabled")
-      print("LOCKDOWN ENABLED")
+      print(msg and msg.ok and "LOCKDOWN ENABLED" or "Failed.")
       sleep(1)
 
-    elseif c=="10" then
-      local msg=adminCmd(session,{cmd="lockdown_off"})
+    elseif c == "3" then
+      local msg = adminCmd(session, {cmd = "lockdown_off"})
       drawHeader("[DoorAuth Admin Remote] Security", "Lockdown disabled")
-      print("Lockdown disabled.")
+      print(msg and msg.ok and "Lockdown disabled." or "Failed.")
       sleep(1)
 
-    elseif c=="11" then
-      viewLogs(session)
+    elseif c == "4" or c == "" then
+      return
+    end
+  end
+end
 
-    elseif c=="12" then
+local function helpScreen()
+  drawHeader("[DoorAuth Admin Remote] Help", "Menu-driven admin categories")
+  print("Use the numbered categories to manage doors, users, security, and logs.")
+  print("Each screen keeps the same action set, but the navigation now mirrors the server.")
+  pause()
+end
+
+---------------------------------------------------
+-- MAIN MENU
+---------------------------------------------------
+local function mainMenu(session)
+  while true do
+    drawHeader("[DoorAuth Admin Remote] Console", "Structured admin navigation")
+    print("1) Doors")
+    print("2) Users")
+    print("3) Security")
+    print("4) Logs")
+    print("5) Help")
+    print("6) Logout")
+    write("Choose: ")
+    local c = read()
+
+    if c == "1" then
+      doorsMenu(session)
+    elseif c == "2" then
       manageUsers(session)
-
-    elseif c=="7" then
+    elseif c == "3" then
+      securityMenu(session)
+    elseif c == "4" then
+      viewLogs(session)
+    elseif c == "5" then
+      helpScreen()
+    elseif c == "6" or c == "" then
       drawHeader("[DoorAuth Admin Remote] Session", "Logged out")
       print("Logged out.")
       sleep(0.4)
