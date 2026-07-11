@@ -65,7 +65,12 @@ DoorAuth consists of **five major components**:
 - Remote door open  
 - Audit log viewer  
 
-### 5. Door Fob (Player Access Device)
+### 5. Lockdown Alarm
+- Polls the server for lockdown state
+- Drives a configurable redstone output when lockdown is enabled
+- Turns the signal off again when lockdown is cleared
+
+### 6. Door Fob (Player Access Device)
 - Auto-discovers doors  
 - Simple door selection  
 - Enter code  
@@ -84,6 +89,7 @@ auth_server.lua
 door_controller.lua  
 keypad_door.lua  
 admin_remote.lua  
+lockdown_alarm.lua  
 door_fob.lua  
 doorauth_api_example.lua  
 
