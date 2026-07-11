@@ -340,7 +340,7 @@ local function findCardManipulator()
 end
 
 local function readCardCode(readerName, reader)
-  while not reader:hasCard() do
+  while not reader.hasCard() do
     sleep(0.2)
   end
 
@@ -366,6 +366,26 @@ local function readCardCode(readerName, reader)
   return value
 end
 
+local function chooseAccessMode(hasCardReader)
+  if not hasCardReader then
+    return "pin"
+  end
+
+  term.clear()
+  term.setCursorPos(1,1)
+  print("=== Access Mode ===")
+  print("1) PIN")
+  print("2) Magnetic Card")
+  write("Choose: ")
+  local choice = string.lower(read() or "")
+
+  if choice == "2" or choice == "c" or choice == "card" then
+    return "card"
+  end
+
+  return "pin"
+end
+
 -- ---------- Main ----------
 local function main()
   openModems()
@@ -385,7 +405,9 @@ local function main()
 
   while true do
     local pin
-    if readerName then
+    local accessMode = chooseAccessMode(readerName ~= nil)
+
+    if accessMode == "card" and readerName then
       term.clear()
       term.setCursorPos(1,1)
       print("Insert magnetic card for door: " .. DOOR_TAG)
@@ -399,7 +421,7 @@ local function main()
     pin = trim(pin)
 
     if pin == "" then
-      if readerName then
+      if accessMode == "card" and readerName then
         print("No code read.")
         sleep(1)
       elseif mon then

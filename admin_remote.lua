@@ -216,7 +216,7 @@ end
 local function waitForCard(reader, timeoutSeconds)
   local timer = os.startTimer(timeoutSeconds or 20)
   while true do
-    if reader:hasCard() then
+    if reader.hasCard() then
       return true
     end
 
@@ -232,9 +232,21 @@ local function writeCard(reader, token, label)
     return false, "No card detected."
   end
 
-  local ok, err = reader.writeCard(token)
+  local ok, err = pcall(reader.writeCard, token)
   if not ok then
     return false, err or "Write failed."
+  end
+
+  sleep(0.2)
+
+  local readBack = nil
+  local readOk, readErr = pcall(reader.readCard)
+  if readOk then
+    readBack = readErr
+  end
+
+  if readBack ~= token then
+    return false, "Card verification failed."
   end
 
   if type(reader.setLabel) == "function" then

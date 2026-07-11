@@ -559,6 +559,58 @@ local function verifyAccess(tag, code)
 
   return hasPin(tag, code), nil, nil
 end
+
+local function isPocketComputer()
+  return pocket ~= nil and type(pocket.equipBack) == "function"
+end
+
+local function findCardManipulator()
+  for _, name in ipairs(peripheral.getNames()) do
+    local wrapped = peripheral.wrap(name)
+    if wrapped and type(wrapped.writeCard) == "function" and type(wrapped.hasCard) == "function" then
+      return name, wrapped
+    end
+  end
+
+  return nil, nil
+end
+
+local function waitForCard(reader, timeoutSeconds)
+  local timer = os.startTimer(timeoutSeconds or 20)
+  while true do
+    if reader.hasCard() then
+      return true
+    end
+
+    local event, timerId = os.pullEvent()
+    if event == "timer" and timerId == timer then
+      return false
+    end
+  end
+end
+
+local function writeCard(reader, token, label)
+  if not waitForCard(reader, 20) then
+    return false, "No card detected."
+  end
+
+  local ok, err = reader.writeCard(token)
+  if not ok then
+    return false, err or "Write failed."
+  end
+
+  if type(reader.setLabel) == "function" then
+    pcall(reader.setLabel, label)
+  end
+  if type(reader.setSecure) == "function" then
+    pcall(reader.setSecure, true)
+  end
+  if type(reader.ejectCard) == "function" then
+    pcall(reader.ejectCard)
+  end
+
+  return true
+end
 --------------------------------------------
 
 ---------------- Remote Admin --------------
