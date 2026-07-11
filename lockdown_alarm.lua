@@ -162,7 +162,6 @@ local defaults = {
   request_timeout = 3,
   poll_interval = 2,
   output_side = "back",
-  active_high = true,
 }
 
 local fields = {
@@ -171,7 +170,6 @@ local fields = {
   { key = "request_timeout", label = "Request Timeout" },
   { key = "poll_interval", label = "Poll Interval" },
   { key = "output_side", label = "Output Side", help = "Use a side name like back, front, left, right, top, bottom, or all." },
-  { key = "active_high", label = "Active High", help = "true means lockdown turns the signal on; false inverts it." },
 }
 
 local config = startupPrompt("DoorAuth Lockdown Alarm Setup", "lockdown_alarm", defaults, fields)
@@ -181,7 +179,6 @@ local SERVER_NAME = config.server_name
 local REQUEST_TIMEOUT = config.request_timeout
 local POLL_INTERVAL = math.max(0.5, tonumber(config.poll_interval) or 2)
 local OUTPUT_SIDE = string.lower(trim(config.output_side))
-local ACTIVE_HIGH = config.active_high ~= false
 
 local validSides = {}
 for _, side in ipairs(rs.getSides()) do
@@ -206,7 +203,7 @@ local function findServer()
 end
 
 local function setAlarm(active)
-  local signal = ACTIVE_HIGH and active or not active
+  local signal = active and true or false
   if OUTPUT_SIDE == "all" then
     for _, side in ipairs(rs.getSides()) do
       redstone.setOutput(side, signal)
@@ -242,7 +239,6 @@ local function drawScreen(lockdown, state)
   print("Server: " .. SERVER_NAME)
   print("Protocol: " .. PROTOCOL)
   print("Output: " .. (OUTPUT_SIDE == "all" and "all sides" or OUTPUT_SIDE))
-  print("Mode: " .. (ACTIVE_HIGH and "active-high" or "active-low"))
   print("")
   if lockdown == nil then
     print("Lockdown: unknown")
