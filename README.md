@@ -6,6 +6,8 @@
 DoorAuth is a fully modular, distributed, secure access-control system for CC:Tweaked. It uses a central server to manage:
 
 - PIN validation  
+- Per-user access codes  
+- Shared JSON-based configuration  
 - Door databases  
 - Controller registration  
 - Remote admin commands  
@@ -20,11 +22,17 @@ DoorAuth consists of **five major components**:
 
 ### 1. Auth Server (Core Brain)
 - Stores PINs and door configurations  
+- Stores per-user codes and door entitlements  
 - Verifies all PIN entry attempts  
 - Sends open commands to controllers  
 - Handles admin login (hashed PIN + session tokens)  
 - Global Lockdown mode  
 - Persistent audit logs  
+
+### Startup Setup
+- Each script shows a 3-second setup prompt on launch  
+- Press any key during the countdown to edit values  
+- Settings are saved to `doorauth_config.json`  
 - Heartbeat monitoring  
 
 ### 2. Door Controllers (Per-Door Redstone Units)
@@ -45,6 +53,9 @@ DoorAuth consists of **five major components**:
 - Secure login  
 - Session tokens  
 - Add/remove PINs  
+- Add/remove users  
+- Enable/disable doors per user  
+- View user door access  
 - Door management  
 - Lockdown mode  
 - Remote door open  
@@ -53,7 +64,7 @@ DoorAuth consists of **five major components**:
 ### 5. Door Fob (Player Access Device)
 - Auto-discovers doors  
 - Simple door selection  
-- Enter PIN  
+- Enter code  
 - Server verifies  
 - Lightweight & portable  
 
@@ -67,7 +78,7 @@ DoorAuth consists of **five major components**:
 ## 📦 Included Programs
 auth_server.lua  
 door_controller.lua  
-keypad.lua  
+keypad_door.lua  
 admin_remote.lua  
 door_fob.lua  
 

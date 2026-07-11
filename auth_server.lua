@@ -1,31 +1,207 @@
---============================================================--
---  auth_server.lua  (FINAL VERSION)
---  Features:
---    ✔ Admin PIN (hashed)
---    ✔ Local admin console
---    ✔ Remote admin (secure login)
---    ✔ Lockdown mode
---    ✔ Door fob support (door_list + verify)
---    ✔ Audit logs (persistent)
---    ✔ Heartbeat to controllers
---    ✔ Autosave + DB persistence
---    ✔ Controller auto-registration
---============================================================--
 
 ------------------ Config ------------------
-local PROTOCOL        = "doorAuth.v1"
-local OPEN_EVENT      = "doorAuth.open.v1"
-local HEARTBEAT_EVENT = "doorAuth.heartbeat.v1"
-local HOST_NAME       = "DoorAuthServer"
+local CONFIG_PATH = "doorauth_config.json"
 
-local DB_PATH         = "door_db.json"
-local ADMIN_PATH      = "admin.json"
-local LOG_PATH        = "door_logs.json"
+local function readAll(path)
+  if not fs.exists(path) then return nil end
+  local handle = fs.open(path, "r")
+  local data = handle.readAll()
+  handle.close()
+  return data
+end
 
-local SAVE_INTERVAL   = 30
-local ADMIN_TIMEOUT   = 120     -- 2 minutes inactivity
-local HEARTBEAT_RATE  = 10
-local LOG_MAX         = 1000
+local function writeAll(path, data)
+  local handle = fs.open(path, "w")
+  handle.write(data)
+  handle.close()
+end
+
+local function jsonEncode(tbl)
+  if textutils.serializeJSON then return textutils.serializeJSON(tbl) end
+  return textutils.serialize(tbl)
+end
+
+local function jsonDecode(data)
+  if not data then return nil end
+  if textutils.unserializeJSON then return textutils.unserializeJSON(data) end
+  return textutils.unserialize(data)
+end
+
+local function deepCopy(value)
+  if type(value) ~= "table" then return value end
+  local out = {}
+  for key, item in pairs(value) do
+    out[deepCopy(key)] = deepCopy(item)
+  end
+  return out
+end
+
+local function mergeDefaults(defaults, config)
+  local out = deepCopy(defaults or {})
+  config = config or {}
+  for key, value in pairs(config) do
+    if type(value) == "table" and type(out[key]) == "table" then
+      out[key] = mergeDefaults(out[key], value)
+    else
+      out[key] = value
+    end
+  end
+  return out
+end
+
+local function loadRoot()
+  local parsed = jsonDecode(readAll(CONFIG_PATH))
+  return type(parsed) == "table" and parsed or {}
+end
+
+local function saveRoot(root)
+  writeAll(CONFIG_PATH, jsonEncode(root))
+end
+
+local function normalizeValue(raw, current)
+  if type(current) == "number" then
+    local value = tonumber(raw)
+    return value ~= nil and value or current
+  end
+  if type(current) == "boolean" then
+    local value = tostring(raw or ""):lower()
+    if value == "true" or value == "yes" or value == "1" or value == "y" then return true end
+    if value == "false" or value == "no" or value == "0" or value == "n" then return false end
+    return current
+  end
+  return tostring(raw or current or "")
+end
+
+local function fieldValue(cfg, field)
+  local value = cfg[field.key]
+  if value == nil then return "" end
+  if type(value) == "boolean" then return value and "true" or "false" end
+  return tostring(value)
+end
+
+local function startupPrompt(title, section, defaults, fields)
+  local root = loadRoot()
+  root[section] = mergeDefaults(defaults, root[section])
+  local cfg = root[section]
+
+  term.clear()
+  term.setCursorPos(1, 1)
+  print(title)
+  print("Press any key within 3 seconds to open setup.")
+  print("Starting automatically if you wait.")
+
+  local timer = os.startTimer(3)
+  local openMenu = false
+  while true do
+    local event = { os.pullEvent() }
+    if event[1] == "timer" and event[2] == timer then
+      break
+    elseif event[1] == "key" or event[1] == "char" or event[1] == "mouse_click" then
+      openMenu = true
+      break
+    end
+  end
+
+  if openMenu then
+    while true do
+      term.clear()
+      term.setCursorPos(1, 1)
+      print(title)
+      print("Config section: " .. section)
+      print("")
+      for index, field in ipairs(fields) do
+        print(('%d) %s = %s'):format(index, field.label, fieldValue(cfg, field)))
+      end
+      print("")
+      print("S) Save and start")
+      print("Q) Start without saving")
+      write("Choice: ")
+      local choice = tostring(read() or ""):lower()
+
+      if choice == "s" then
+        root[section] = cfg
+        saveRoot(root)
+        term.clear()
+        term.setCursorPos(1, 1)
+        print("Saved configuration.")
+        sleep(0.6)
+        break
+      elseif choice == "q" or choice == "" then
+        break
+      else
+        local index = tonumber(choice)
+        if index and fields[index] then
+          local field = fields[index]
+          term.clear()
+          term.setCursorPos(1, 1)
+          print(field.label)
+          print("Current: " .. fieldValue(cfg, field))
+          if field.help then print(field.help) end
+          write("New value: ")
+          local raw = read()
+          if raw ~= nil and raw ~= "" then
+            cfg[field.key] = normalizeValue(raw, cfg[field.key])
+          end
+        end
+      end
+    end
+  end
+
+  root[section] = cfg
+  saveRoot(root)
+  return cfg
+end
+
+local serverDefaults = {
+  protocol = "doorAuth.v1",
+  open_event = "doorAuth.open.v1",
+  heartbeat_event = "doorAuth.heartbeat.v1",
+  host_name = "DoorAuthServer",
+  db_path = "door_db.json",
+  admin_path = "admin.json",
+  log_path = "door_logs.json",
+  save_interval = 30,
+  admin_timeout = 120,
+  heartbeat_rate = 10,
+  log_max = 1000,
+}
+
+local serverFields = {
+  { key = "protocol", label = "Protocol" },
+  { key = "open_event", label = "Open Event" },
+  { key = "heartbeat_event", label = "Heartbeat Event" },
+  { key = "host_name", label = "Host Name" },
+  { key = "db_path", label = "Database File" },
+  { key = "admin_path", label = "Admin File" },
+  { key = "log_path", label = "Log File" },
+  { key = "save_interval", label = "Save Interval" },
+  { key = "admin_timeout", label = "Admin Timeout" },
+  { key = "heartbeat_rate", label = "Heartbeat Rate" },
+  { key = "log_max", label = "Log Max" },
+}
+
+local serverConfig = startupPrompt("DoorAuth Server Setup", "auth_server", serverDefaults, serverFields)
+
+local db = { doors = {}, users = {} }
+local PROTOCOL        = serverConfig.protocol
+local OPEN_EVENT      = serverConfig.open_event
+local HEARTBEAT_EVENT = serverConfig.heartbeat_event
+local HOST_NAME       = serverConfig.host_name
+
+local DB_PATH         = serverConfig.db_path
+local ADMIN_PATH      = serverConfig.admin_path
+local LOG_PATH        = serverConfig.log_path
+
+local SAVE_INTERVAL   = tonumber(serverConfig.save_interval) or 30
+local ADMIN_TIMEOUT   = tonumber(serverConfig.admin_timeout) or 120
+local HEARTBEAT_RATE  = tonumber(serverConfig.heartbeat_rate) or 10
+local LOG_MAX         = tonumber(serverConfig.log_max) or 1000
+
+local function ensureDBShape()
+  db = db or {}
+  db.doors = type(db.doors) == "table" and db.doors or {}
+  db.users = type(db.users) == "table" and db.users or {}
+end
 --------------------------------------------
 
 ------------------ Utils -------------------
@@ -75,7 +251,6 @@ end
 --------------------------------------------
 
 ------------------ State -------------------
-local db = { doors = {} }
 local controllersByTag = {}
 local lockdown = false
 local logs = {}
@@ -184,6 +359,7 @@ local function loadDB()
     local parsed = jsonDecode(raw)
     if parsed and parsed.doors then
       db = parsed
+      ensureDBShape()
       print("[DB] Loaded.")
       return
     end
@@ -192,6 +368,7 @@ local function loadDB()
 end
 
 local function saveDB()
+  ensureDBShape()
   writeAll(DB_PATH, jsonEncode(db))
   print("[DB] Saved.")
 end
@@ -219,6 +396,117 @@ end
 local function ensureDoor(tag)
   db.doors[tag] = db.doors[tag] or { pins={}, openTime=3 }
   return db.doors[tag]
+end
+
+local function ensureUser(name)
+  ensureDBShape()
+  local key = trim(name)
+  if key == "" then return nil end
+  db.users[key] = db.users[key] or { codeHash = nil, doors = {} }
+  db.users[key].doors = type(db.users[key].doors) == "table" and db.users[key].doors or {}
+  return db.users[key], key
+end
+
+local function addUser(name, code)
+  local user = ensureUser(name)
+  if not user or trim(code) == "" then return false end
+  user.codeHash = sha256(code)
+  return true
+end
+
+local function generateCardToken(name)
+  return ("card_%s_%s_%s"):format(trim(name), tostring(os.epoch("utc")), tostring(math.random(100000, 999999)))
+end
+
+local function issueUserCard(name)
+  local user = ensureUser(name)
+  if not user then return nil end
+  user.cardToken = generateCardToken(name)
+  return user.cardToken
+end
+
+local function clearUserCard(name)
+  local key = trim(name)
+  local user = db.users[key]
+  if not user then return false end
+  user.cardToken = nil
+  return true
+end
+
+local function findUserByCardToken(token)
+  token = tostring(token or "")
+  if token == "" then return nil, nil end
+  for name, user in pairs(db.users) do
+    if user and user.cardToken == token then
+      return name, user
+    end
+  end
+  return nil, nil
+end
+
+local function removeUser(name)
+  local key = trim(name)
+  if key == "" or not db.users[key] then return false end
+  db.users[key] = nil
+  return true
+end
+
+local function findUserByCode(code)
+  local codeHash = sha256(code)
+  for name,user in pairs(db.users) do
+    if user and user.codeHash == codeHash then
+      return name, user
+    end
+  end
+  return nil, nil
+end
+
+local function userDoorEnabled(user, tag)
+  if not user or not tag then return false end
+  return user.doors and user.doors[tag] == true
+end
+
+local function enableUserDoor(name, tag)
+  local user = ensureUser(name)
+  if not user or trim(tag) == "" then return false end
+  user.doors[tag] = true
+  return true
+end
+
+local function disableUserDoor(name, tag)
+  local key = trim(name)
+  local user = db.users[key]
+  if not user or trim(tag) == "" then return false end
+  user.doors[tag] = nil
+  return true
+end
+
+local function listUserDoors(name)
+  local key = trim(name)
+  local user = db.users[key]
+  if not user then return nil end
+  local doors = {}
+  for tag, enabled in pairs(user.doors or {}) do
+    if enabled then table.insert(doors, tag) end
+  end
+  table.sort(doors)
+  return doors
+end
+
+local function listUsers()
+  local out = {}
+  for name,user in pairs(db.users) do
+    local doors = listUserDoors(name) or {}
+    table.insert(out, {
+      name = name,
+      doors = doors,
+      doorCount = #doors,
+      hasCode = user and user.codeHash ~= nil or false,
+      hasCard = user and user.cardToken ~= nil or false
+    })
+  end
+  table.sort(out, function(a,b) return a.name < b.name end)
+  return out
 end
 
 local function hasPin(tag, pin)
@@ -252,6 +540,24 @@ local function removePin(tag,pin)
   end
   d.pins=out
   return removed
+end
+
+local function verifyAccess(tag, code)
+  if lockdown then
+    return false, nil, "lockdown"
+  end
+
+  local tokenUserName, tokenUser = findUserByCardToken(code)
+  if tokenUser then
+    return userDoorEnabled(tokenUser, tag), tokenUserName, nil
+  end
+
+  local userName, user = findUserByCode(code)
+  if user then
+    return userDoorEnabled(user, tag), userName, nil
+  end
+
+  return hasPin(tag, code), nil, nil
 end
 --------------------------------------------
 
@@ -349,6 +655,70 @@ local function handleRemoteAdmin(sender,msg)
 
     elseif msg.cmd=="logs" then
       rednet.send(sender,{type="admin_logs", logs=logs},PROTOCOL)
+
+    elseif msg.cmd=="user_list" then
+      rednet.send(sender,{type="admin_users", users=listUsers()},PROTOCOL)
+
+    elseif msg.cmd=="user_show" then
+      local user = db.users[trim(msg.name or "")]
+      local doors = listUserDoors(msg.name or "") or {}
+      rednet.send(sender,{type="admin_user", name=trim(msg.name or ""), user=user, doors=doors, hasCard=user and user.cardToken ~= nil or false},PROTOCOL)
+
+
+    elseif cmd=="user_show" and args[2] then
+      if requireAdmin() then
+        local user = db.users[args[2]]
+        local doors = listUserDoors(args[2]) or {}
+        if not user then
+          print("No such user.")
+        else
+          print("User:", args[2])
+          print("Code set:", user.codeHash and "yes" or "no")
+          print("Card:", user.cardToken and "yes" or "no")
+          print("Doors:")
+          if #doors == 0 then
+            print("  (none)")
+          else
+            for _,door in ipairs(doors) do
+              print("  "..door)
+            end
+          end
+        end
+      end
+
+    elseif msg.cmd=="user_add" then
+      local ok = addUser(msg.name, msg.code)
+      logEvent({event="user_add", tag=msg.name, ok=ok, source="remote"})
+      rednet.send(sender,{type="admin_result", ok=ok},PROTOCOL)
+
+    elseif msg.cmd=="user_card_issue" then
+      local token = issueUserCard(msg.name)
+      local ok = token ~= nil
+      logEvent({event="user_card_issue", tag=msg.name, ok=ok, source="remote"})
+      rednet.send(sender,{type="admin_user_card", ok=ok, token=token, name=trim(msg.name or "")},PROTOCOL)
+
+    elseif msg.cmd=="user_card_clear" then
+      local ok = clearUserCard(msg.name)
+      logEvent({event="user_card_clear", tag=msg.name, ok=ok, source="remote"})
+      rednet.send(sender,{type="admin_result", ok=ok},PROTOCOL)
+
+    elseif msg.cmd=="user_del" then
+      local ok = removeUser(msg.name)
+      logEvent({event="user_del", tag=msg.name, ok=ok, source="remote"})
+      rednet.send(sender,{type="admin_result", ok=ok},PROTOCOL)
+
+    elseif msg.cmd=="user_enable" then
+      local ok = enableUserDoor(msg.name, msg.tag)
+      logEvent({event="user_enable", tag=msg.tag, ok=ok, source="remote", detail=tostring(msg.name)})
+      rednet.send(sender,{type="admin_result", ok=ok},PROTOCOL)
+
+    elseif msg.cmd=="user_disable" then
+      local ok = disableUserDoor(msg.name, msg.tag)
+      logEvent({event="user_disable", tag=msg.tag, ok=ok, source="remote", detail=tostring(msg.name)})
+      rednet.send(sender,{type="admin_result", ok=ok},PROTOCOL)
+
+    elseif msg.cmd=="user_doors" then
+      rednet.send(sender,{type="admin_user_doors", name=trim(msg.name or ""), doors=listUserDoors(msg.name or "") or {}},PROTOCOL)
     end
 
     return true
@@ -376,21 +746,16 @@ local function handleMessage(sender,msg,proto)
   -------------- verify (keypads + fob) -----
   if msg.type=="verify" then
     local tag=trim(msg.tag)
-    local pin=trim(msg.pin)
+    local code=trim(msg.pin or msg.code)
 
-    if lockdown then
-      rednet.send(sender,{type="verify_result",ok=false,tag=tag},PROTOCOL)
-      logEvent({event="pin_attempt",tag=tag,ok=false,source="keypad#"..sender,detail="lockdown"})
-      return
-    end
-
-    local ok = hasPin(tag,pin)
+    local ok,userName,reason = verifyAccess(tag,code)
     rednet.send(sender,{type="verify_result",ok=ok,tag=tag},PROTOCOL)
 
     logEvent({
       event="pin_attempt",
       tag=tag, ok=ok,
-      source="keypad#"..sender
+      source=(userName and ("user#"..userName) or ("keypad#"..sender)),
+      detail=reason
     })
 
     if ok then
@@ -435,6 +800,16 @@ local function help()
   -- Admin commands --
   add <tag> <pin>
   del <tag> <pin>
+  user_add <name> <code>
+  user_del <name>
+  user_card_issue <name>
+  user_card_clear <name>
+  user_card_show <name>
+  user_enable <name> <tag>
+  user_disable <name> <tag>
+  user_doors <name>
+  user_list
+  user_show <name>
   opentime <tag> <seconds>
   remove <tag>
   show <tag>
@@ -491,8 +866,14 @@ local function consoleLoop()
     elseif cmd=="list" then
       if requireAdmin() then
         for tag,d in pairs(db.doors) do
-          print(("- %s (pins:%d, open:%ds)")
-            :format(tag,#d.pins,d.openTime or 3))
+          local userCount = 0
+          for _,user in pairs(db.users) do
+            if user and user.doors and user.doors[tag] then
+              userCount = userCount + 1
+            end
+          end
+          print(("- %s (pins:%d, open:%ds, users:%d)")
+            :format(tag,#d.pins,d.openTime or 3,userCount))
         end
       end
 
@@ -500,8 +881,18 @@ local function consoleLoop()
       if requireAdmin() then
         local d=db.doors[args[2]]
         if not d then print("No such door.") else
-          print("OpenTime:",d.openTime) print("Pins:")
+          print("OpenTime:",d.openTime)
+          print("Pins:")
           for _,p in ipairs(d.pins) do print("  "..p) end
+          print("Users:")
+          local found = false
+          for name,user in pairs(db.users) do
+            if user and user.doors and user.doors[args[2]] then
+              found = true
+              print("  "..name..(user.cardToken and " [card]" or ""))
+            end
+          end
+          if not found then print("  (none)") end
         end
       end
 
@@ -512,11 +903,90 @@ local function consoleLoop()
         print(ok and "Added." or "Already present.")
       end
 
-    elseif cmd=="del" and args[2] and args[3] then
+    elseif cmd=="user_card_issue" and args[2] then
       if requireAdmin() then
-        local ok=removePin(args[2],args[3])
-        logEvent({event="pin_del",tag=args[2],ok=ok,source="console"})
-        print(ok and "Removed." or "Not found.")
+        local token = issueUserCard(args[2])
+        local ok = token ~= nil
+        logEvent({event="user_card_issue",tag=args[2],ok=ok,source="console"})
+        if ok then
+          print("Card token:", token)
+        else
+          print("Failed.")
+        end
+      end
+
+    elseif cmd=="user_card_clear" and args[2] then
+      if requireAdmin() then
+        local ok = clearUserCard(args[2])
+        logEvent({event="user_card_clear",tag=args[2],ok=ok,source="console"})
+        print(ok and "Cleared." or "Not found.")
+      end
+
+    elseif cmd=="user_add" and args[2] and args[3] then
+      if requireAdmin() then
+        local ok=addUser(args[2],args[3])
+        logEvent({event="user_add",tag=args[2],ok=ok,source="console"})
+        print(ok and "User saved." or "Failed.")
+      end
+
+    elseif cmd=="user_del" and args[2] then
+      if requireAdmin() then
+        local ok=removeUser(args[2])
+        logEvent({event="user_del",tag=args[2],ok=ok,source="console"})
+        print(ok and "User removed." or "Not found.")
+      end
+
+    elseif cmd=="user_enable" and args[2] and args[3] then
+      if requireAdmin() then
+        local ok=enableUserDoor(args[2],args[3])
+        logEvent({event="user_enable",tag=args[3],ok=ok,source="console",detail=args[2]})
+        print(ok and "Door enabled for user." or "Failed.")
+      end
+
+    elseif cmd=="user_disable" and args[2] and args[3] then
+      if requireAdmin() then
+        local ok=disableUserDoor(args[2],args[3])
+        logEvent({event="user_disable",tag=args[3],ok=ok,source="console",detail=args[2]})
+        print(ok and "Door disabled for user." or "Failed.")
+      end
+
+    elseif cmd=="user_doors" and args[2] then
+      if requireAdmin() then
+        local doors = listUserDoors(args[2])
+        if not doors then
+          print("No such user.")
+        else
+          print("Doors for "..args[2]..":")
+          if #doors == 0 then
+            print("  (none)")
+          else
+            for _,door in ipairs(doors) do
+              print("  "..door)
+            end
+          end
+        end
+      end
+
+    elseif cmd=="user_card_show" and args[2] then
+      if requireAdmin() then
+        local user = db.users[args[2]]
+        if not user then
+          print("No such user.")
+        else
+          print("Card:", user.cardToken and "yes" or "no")
+        end
+      end
+
+    elseif cmd=="user_list" then
+      if requireAdmin() then
+        local users = listUsers()
+        if #users == 0 then
+          print("No users configured.")
+        else
+          for _,user in ipairs(users) do
+            print(("- %s (doors:%d, card:%s)"):format(user.name, user.doorCount or 0, user.hasCard and "yes" or "no"))
+          end
+        end
       end
 
     elseif cmd=="opentime" and args[2] and tonumber(args[3]) then
