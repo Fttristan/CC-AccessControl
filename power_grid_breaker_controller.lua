@@ -5,8 +5,8 @@
 
 local STATE_PATH = "power_grid_breaker_state.json"
 
-local PULSE_SECONDS = 0.1
-local COOLDOWN_SECONDS = 0.5
+local PULSE_SECONDS = 0.5
+local COOLDOWN_SECONDS = 2
 
 local LEFT_BREAKER_SIDE = "left"
 local RIGHT_BREAKER_SIDE = "right"
