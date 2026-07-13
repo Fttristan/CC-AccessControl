@@ -5,8 +5,12 @@
 
 local STATE_PATH = "power_grid_breaker_state.json"
 
-local PULSE_SECONDS = 0.1
-local COOLDOWN_SECONDS = 0.5
+local SOURCES_PROTOCOL = "powerGrid.sources.v1"
+local SOURCES_SERVER_NAME = "PowerGridSourcesController"
+local INTERLOCK_TIMEOUT = 3
+
+local PULSE_SECONDS = 0.5
+local COOLDOWN_SECONDS = 2
 
 local LEFT_BREAKER_SIDE = "left"
 local RIGHT_BREAKER_SIDE = "right"
@@ -28,6 +32,14 @@ local function writeAll(path, data)
   handle.write(data)
   handle.close()
   return true
+end
+
+local function openModems()
+  for _, side in ipairs(rs.getSides()) do
+    if peripheral.getType(side) == "modem" and not rednet.isOpen(side) then
+      rednet.open(side)
+    end
+  end
 end
 
 local function jsonEncode(tbl)
@@ -62,6 +74,61 @@ end
 
 local state = loadState()
 
+local function pauseSourcesForBatterySwitch()
+  openModems()
+
+  local server = rednet.lookup(SOURCES_PROTOCOL, SOURCES_SERVER_NAME)
+  if not server then
+    return false, "sources controller offline"
+  end
+
+  local token = tostring(os.epoch("utc")) .. tostring(math.random(100000, 999999))
+  rednet.send(server, { type = "sources_pause", token = token }, SOURCES_PROTOCOL)
+
+  local timer = os.startTimer(INTERLOCK_TIMEOUT)
+  while true do
+    local event = { os.pullEvent() }
+    if event[1] == "rednet_message" then
+      local sender, msg, proto = event[2], event[3], event[4]
+      if sender == server and proto == SOURCES_PROTOCOL and type(msg) == "table" then
+        if msg.type == "sources_paused" and msg.token == token then
+          return token
+        end
+      end
+    elseif event[1] == "timer" and event[2] == timer then
+      return false, "sources pause timeout"
+    end
+  end
+end
+
+local function restoreSources(token)
+  if not token then
+    return false, "missing restore token"
+  end
+
+  openModems()
+  local server = rednet.lookup(SOURCES_PROTOCOL, SOURCES_SERVER_NAME)
+  if not server then
+    return false, "sources controller offline"
+  end
+
+  rednet.send(server, { type = "sources_restore", token = token }, SOURCES_PROTOCOL)
+  local timer = os.startTimer(INTERLOCK_TIMEOUT)
+  while true do
+    local event = { os.pullEvent() }
+    if event[1] == "rednet_message" then
+      local sender, msg, proto = event[2], event[3], event[4]
+      if sender == server and proto == SOURCES_PROTOCOL and type(msg) == "table" then
+        if msg.type == "sources_restored" and msg.ok == true and msg.token == token then
+          return true
+        end
+      end
+    elseif event[1] == "timer" and event[2] == timer then
+      return false, "sources restore timeout"
+    end
+  end
+end
+
 local function pulse(side)
   redstone.setOutput(side, true)
   sleep(PULSE_SECONDS)
@@ -92,6 +159,13 @@ local function forceBothOff()
 end
 
 local function turnOnLeft()
+  local token, err = pauseSourcesForBatterySwitch()
+  if not token then
+    print("Cannot switch batteries: " .. tostring(err))
+    sleep(1)
+    return
+  end
+
   forceBothOff()
   sleep(COOLDOWN_SECONDS)
   pulse(LEFT_BREAKER_SIDE)
@@ -99,9 +173,20 @@ local function turnOnLeft()
   state.rightState = false
   saveState(state)
   updateLamps()
+
+  sleep(1)
+
+  restoreSources(token)
 end
 
 local function turnOnRight()
+  local token, err = pauseSourcesForBatterySwitch()
+  if not token then
+    print("Cannot switch batteries: " .. tostring(err))
+    sleep(1)
+    return
+  end
+
   forceBothOff()
   sleep(COOLDOWN_SECONDS)
   pulse(RIGHT_BREAKER_SIDE)
@@ -109,6 +194,10 @@ local function turnOnRight()
   state.rightState = true
   saveState(state)
   updateLamps()
+
+  sleep(1)
+
+  restoreSources(token)
 end
 
 local function turnAllOff()
@@ -158,7 +247,7 @@ local function drawStatus()
   term.clear()
   term.setCursorPos(1, 1)
   print("Create: Power Grid Breaker Controller")
-  print("Front button toggles between batteries and generators.")
+  print("Keyboard CLI controls the breaker states.")
   print("")
   print("Left  (batteries):   " .. (state.leftState and "ON" or "OFF"))
   print("Right (generators):   " .. (state.rightState and "ON" or "OFF"))
