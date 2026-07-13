@@ -77,29 +77,6 @@ DoorAuth consists of **five major components**:
 - Server verifies  
 - Lightweight & portable  
 
-## ⚡ Power Grid Management System
-The repository also includes a self-contained power-grid management system under `pms/`.
-
-### PMS Components
-- Power Grid Server: central breaker state and rules engine
-- Breaker Controller: redstone controller for a single breaker
-- Remote Control Panel: authenticated operator console
-
-### Breaker Rules
-- Battery is a power source
-- Generators must be off before turning on the battery
-- Battery must be off before turning on the generators
-- Internal Building and Residential Grid are loads that can only be enabled when a source is on
-
-### Auth Integration
-- The remote control panel uses DoorAuth for access control
-- Register the panel under a dedicated door tag such as `power_grid_panel`
-- Grant users access to that tag in the existing DoorAuth admin tools
-
-### PMS Files
-pms/power_grid_server.lua  
-pms/breaker_controller.lua  
-pms/remote_control_panel.lua
 
 ## ⚙️ Hardware Support
 - Regular computers  
