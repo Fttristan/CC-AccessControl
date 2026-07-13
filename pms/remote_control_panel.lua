@@ -186,18 +186,12 @@ common.trim = trim
 local CONFIG_PATH = "pms/pms_config.json"
 
 local panelDefaults = {
-  auth_protocol = "doorAuth.v1",
-  auth_server_name = "DoorAuthServer",
-  auth_tag = "power_grid_panel",
   grid_protocol = "powerGrid.v1",
   grid_server_name = "PowerGridServer",
   request_timeout = 5,
 }
 
 local panelFields = {
-  { key = "auth_protocol", label = "Auth Protocol" },
-  { key = "auth_server_name", label = "Auth Server Name" },
-  { key = "auth_tag", label = "Auth Door Tag" },
   { key = "grid_protocol", label = "Grid Protocol" },
   { key = "grid_server_name", label = "Grid Server Name" },
   { key = "request_timeout", label = "Request Timeout" },
@@ -205,9 +199,6 @@ local panelFields = {
 
 local config = common.startupPrompt("Power Grid Remote Panel Setup", "remote_control_panel", panelDefaults, panelFields, CONFIG_PATH)
 
-local AUTH_PROTOCOL = config.auth_protocol
-local AUTH_SERVER_NAME = config.auth_server_name
-local AUTH_TAG = common.trim(config.auth_tag)
 local GRID_PROTOCOL = config.grid_protocol
 local GRID_SERVER_NAME = config.grid_server_name
 local REQUEST_TIMEOUT = tonumber(config.request_timeout) or 5
@@ -230,39 +221,6 @@ local function pause(message)
   end
   print("Press Enter to continue.")
   read()
-end
-
-local function loginWithDoorAuth(pin)
-  local server = common.findServer(AUTH_PROTOCOL, AUTH_SERVER_NAME)
-  if not server then
-    return false, "DoorAuth server not found."
-  end
-
-  rednet.send(server, {
-    type = "verify",
-    tag = AUTH_TAG,
-    code = pin,
-  }, AUTH_PROTOCOL)
-
-  local sender, message = rednet.receive(AUTH_PROTOCOL, REQUEST_TIMEOUT)
-  if sender == server and type(message) == "table" and message.type == "verify_result" and message.ok then
-    return true, nil
-  end
-
-  return false, (type(message) == "table" and message.reason) or "Access denied."
-end
-
-local function login()
-  drawHeader("[Power Grid Panel] Login", "Enter the DoorAuth code for the control panel door")
-  write("Code: ")
-  local pin = read("*")
-  local ok, reason = loginWithDoorAuth(tostring(pin or ""))
-  if ok then
-    return true
-  end
-
-  pause(reason or "Login failed.")
-  return false
 end
 
 local function findGridServer()
@@ -338,7 +296,7 @@ local function breakerActionLabel(breaker, action)
 end
 
 local function showPanel(status)
-  drawHeader("[Power Grid Panel] Status", "Registered under DoorAuth tag: " .. AUTH_TAG)
+  drawHeader("[Power Grid Panel] Status", "Direct control access enabled")
 
   if not status then
     print("No status available.")
@@ -413,7 +371,4 @@ local function menuLoop()
 end
 
 common.openModems()
-
-if login() then
-  menuLoop()
-end
+menuLoop()
