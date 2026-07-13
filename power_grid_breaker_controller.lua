@@ -1,6 +1,6 @@
 -- power_grid_breaker_controller.lua
 -- Left side = batteries, right side = generators.
--- Button input is on front.
+-- Keyboard CLI controls the breaker states.
 -- Left lamp is on bottom, right lamp is on top.
 
 local STATE_PATH = "power_grid_breaker_state.json"
@@ -8,7 +8,6 @@ local STATE_PATH = "power_grid_breaker_state.json"
 local PULSE_SECONDS = 0.1
 local COOLDOWN_SECONDS = 0.5
 
-local INPUT_SIDE = "front"
 local LEFT_BREAKER_SIDE = "left"
 local RIGHT_BREAKER_SIDE = "right"
 local LEFT_LAMP_SIDE = "bottom"
@@ -112,6 +111,12 @@ local function turnOnRight()
   updateLamps()
 end
 
+local function turnAllOff()
+  forceBothOff()
+  print("Both breakers are off.")
+  sleep(0.5)
+end
+
 local function toggle()
   if state.leftState == false and state.rightState == false then
     turnOnLeft()
@@ -131,10 +136,22 @@ local function toggle()
   turnOnLeft()
 end
 
-local function waitForButtonRelease()
-  while redstone.getInput(INPUT_SIDE) do
-    sleep(0.05)
-  end
+local function showMenu()
+  term.clear()
+  term.setCursorPos(1, 1)
+  print("Breaker Controller Menu")
+  print("Left = batteries, right = generators")
+  print("")
+  print("Left  (batteries):   " .. (state.leftState and "ON" or "OFF"))
+  print("Right (generators):   " .. (state.rightState and "ON" or "OFF"))
+  print("")
+  print("1) Toggle Breakers")
+  print("2) Turn all off")
+  print("3) Turn Batteries on")
+  print("4) Turn Generators on")
+  print("5) Refresh display")
+  print("Q) Quit")
+  write("Choose: ")
 end
 
 local function drawStatus()
@@ -153,17 +170,26 @@ end
 updateLamps()
 drawStatus()
 
-local lastInput = false
 while true do
-  local inputNow = redstone.getInput(INPUT_SIDE)
+  showMenu()
+  local choice = string.lower((read() or "")):gsub("^%s+", ""):gsub("%s+$", "")
 
-  if inputNow and not lastInput then
+  if choice == "1" or choice == "" then
     toggle()
-    drawStatus()
-    waitForButtonRelease()
-    lastInput = false
-  else
-    lastInput = inputNow
-    sleep(0.05)
+  elseif choice == "2" then
+    turnAllOff()
+  elseif choice == "3" then
+    turnOnLeft()
+  elseif choice == "4" then
+    turnOnRight()
+  elseif choice == "5" then
+    -- just redraw below
+  elseif choice == "q" then
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("Controller stopped.")
+    break
   end
+
+  drawStatus()
 end
