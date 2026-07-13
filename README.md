@@ -94,6 +94,24 @@ lockdown_alarm.lua
 door_fob.lua  
 doorauth_api_example.lua  
 
+## ⚡ PowerGrid Management System
+The PowerGrid system now lives under `pms/` and follows the same server-driven, authenticated pattern as DoorAuth.
+
+### PMS Components
+- `pms/power_grid_server.lua`: central manager, admin login, controller registry, command relay, logs
+- `pms/breaker_controller.lua`: batteries/generators redstone controller
+- `pms/sources_controller.lua`: internal building/grid source controller
+- `pms/remote_control_panel.lua`: authenticated operator panel
+
+### Launchers
+- `power_grid_breaker_controller.lua` launches `pms/breaker_controller.lua`
+- `power_grid_sources_controller.lua` launches `pms/sources_controller.lua`
+
+### Usage
+- Start `pms/power_grid_server.lua` first
+- Start the two controllers next
+- Use `pms/remote_control_panel.lua` to log in and issue commands
+
 ## 🚀 Installation
 1. Install scripts on devices  
 2. Configure ADMIN_PIN_HASH in auth_server.lua  
